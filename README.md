@@ -15,9 +15,14 @@ pnpm link --global    # provides the `repo-dash` command
 
 ## Configuration
 
-Config lives at `~/.config/repo-dash/config.json` and is created on first run,
-seeded with whichever of `~/projects`, `~/ag-projects`, `~/code`, `~/dev`,
-`~/work`, `~/src` exist.
+Config lives at `$XDG_CONFIG_HOME/repo-dash/config.json` when `XDG_CONFIG_HOME`
+is set, and `~/.config/repo-dash/config.json` otherwise. Run `repo-dash config path`
+to print the resolved location.
+
+It is created on first run, seeded with whichever of `~/projects`, `~/ag-projects`,
+`~/code`, `~/dev`, `~/work`, `~/src` exist. **If none of them exist, the seed is
+your home directory at `maxDepth: 3`**, so review the roots after a first run on a
+new machine.
 
 ```bash
 repo-dash roots                          # show scan roots
@@ -32,7 +37,7 @@ repo-dash config path                    # print the config location
 
 | Key | Type | Purpose |
 |---|---|---|
-| `roots[]` | `{path, maxDepth?, enabled?, label?}` | Trees to scan. `~`, `$VAR` and `${VAR}` are expanded. |
+| `roots[]` | `{path, maxDepth?, enabled?, label?}` | Trees to scan. `~`, `$VAR` and `${VAR}` are expanded. A bare string is shorthand for `{ "path": ... }`. Omitting the key re-seeds the defaults; an explicit `[]` means scan nothing. |
 | `ignore` | `string[]` | Skip patterns matched on the absolute path. `*` within a segment, `**` across segments. A bare word like `"docs"` matches any segment of that name. |
 | `pruneDirs` | `string[]` | Directory names never descended into, at any depth. |
 | `maxDepth` | `number` | Default descent depth, overridable per root. |
@@ -40,7 +45,7 @@ repo-dash config path                    # print the config location
 | `scanInsideRepos` | `boolean` | Keep scanning below a repo root so nested repos are found. |
 | `followSymlinks` | `boolean` | Off by default: on WSL2 symlinks often lead into `/mnt/c`, which is slow. |
 | `concurrency` | `number` | Parallel directory reads and git invocations. |
-| `editor` | `string` | Command used by the open-in-editor key. |
+| `editor` | `string` | Command used by the open-in-editor key. Defaults to `$VISUAL`, then `$EDITOR`, then `code`. |
 | `cacheTtlSeconds` | `number` | How long discovery results stay cached. |
 | `repos` | `Record<path, override>` | Per-repo `devCommand`, `devScript`, `packageManager`, `hidden`. |
 
@@ -62,6 +67,15 @@ repo-dash list --json      # machine-readable
 repo-dash cache clear
 ```
 
+Repositories are labelled by kind: a plain checkout is unmarked, while linked
+worktrees show `(worktree)`, submodules show `(submodule)`, and a `.git` pointer
+file with an unrecognized target shows `(linked)`.
+
+The discovery cache is keyed by the settings that affect results, including
+expanded root paths and per-repo `hidden` overrides, so an edit takes effect on
+the next run rather than after the TTL. A cache that cannot be written produces
+a warning; the listing still succeeds.
+
 ## Layout
 
 ```
@@ -70,6 +84,14 @@ src/
   config.ts         load, save, root management, path expansion
   cache.ts          TTL cache keyed by discovery inputs
   git/discover.ts   breadth-first scan for .git
+  util/args.ts      argument parsing
   util/pool.ts      bounded-concurrency runner
   util/glob.ts      ignore-pattern matcher
+```
+
+## Tests
+
+```bash
+pnpm check    # typecheck, build, test
+pnpm test     # node:test runner, no test framework dependency
 ```

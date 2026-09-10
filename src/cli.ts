@@ -6,6 +6,7 @@ import type { Config } from './config.js';
 import { discoverRepos } from './git/discover.js';
 import type { DiscoveredRepo } from './git/discover.js';
 import { clearCache, readCache, writeCache } from './cache.js';
+import { parseRootsAdd } from './util/args.js';
 
 const HELP = `repo-dash - multi-repo git dashboard
 
@@ -49,11 +50,16 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-/** Discovery inputs that should invalidate the cache when they change. */
+/**
+ * Discovery inputs that should invalidate the cache when they change.
+ * Roots are hashed after expansion so a changed `$VAR` is noticed, and the
+ * per-repo overrides are included because discovery filters on `hidden`.
+ */
 function discoveryKey(cfg: Config): string {
+  const roots = cfg.roots.map((r) => [expandPath(r.path), r.maxDepth ?? null, r.enabled !== false]);
   const material = JSON.stringify([
-    cfg.roots, cfg.ignore, cfg.pruneDirs, cfg.maxDepth,
-    cfg.includeHidden, cfg.scanInsideRepos, cfg.followSymlinks,
+    roots, cfg.ignore, cfg.pruneDirs, cfg.maxDepth,
+    cfg.includeHidden, cfg.scanInsideRepos, cfg.followSymlinks, cfg.repos,
   ]);
   return createHash('sha256').update(material).digest('hex').slice(0, 16);
 }
@@ -65,7 +71,16 @@ async function getRepos(cfg: Config, refresh: boolean): Promise<{ repos: Discove
     if (hit) return { ...hit, cached: true, elapsedMs: 0 };
   }
   const result = await discoverRepos(cfg);
-  await writeCache('discovery', key, { repos: result.repos, missingRoots: result.missingRoots });
+
+  // The scan already succeeded, so a cache that cannot be written is a
+  // warning, not a reason to discard results and exit non-zero.
+  try {
+    await writeCache('discovery', key, { repos: result.repos, missingRoots: result.missingRoots });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`warning: could not write cache: ${reason}\n`);
+  }
+
   return { repos: result.repos, missingRoots: result.missingRoots, cached: false, elapsedMs: result.elapsedMs };
 }
 
@@ -89,7 +104,7 @@ async function cmdList(_rest: string[], refresh: boolean, json: boolean): Promis
 
   const width = Math.max(...repos.map((r) => r.name.length));
   for (const repo of repos) {
-    const marker = repo.isLinkedWorktree ? ' (worktree)' : '';
+    const marker = repo.kind === 'normal' ? '' : ` (${repo.kind})`;
     process.stdout.write(`${repo.name.padEnd(width)}  ${repo.path}${marker}\n`);
   }
 
@@ -117,18 +132,12 @@ async function cmdRoots(rest: string[]): Promise<number> {
   }
 
   if (sub === 'add') {
-    const path = args.find((a) => !a.startsWith('-'));
-    if (!path) {
-      process.stderr.write('Usage: repo-dash roots add <path> [--depth N]\n');
+    const parsed = parseRootsAdd(args);
+    if (!parsed.ok) {
+      process.stderr.write(`${parsed.error}\nUsage: repo-dash roots add <path> [--depth N]\n`);
       return 1;
     }
-    const depthIndex = args.indexOf('--depth');
-    const depthRaw = depthIndex >= 0 ? args[depthIndex + 1] : undefined;
-    const depth = depthRaw !== undefined ? Number.parseInt(depthRaw, 10) : undefined;
-    if (depth !== undefined && Number.isNaN(depth)) {
-      process.stderr.write('--depth expects a number\n');
-      return 1;
-    }
+    const { path, maxDepth: depth } = parsed.value;
     const added = await addRoot(cfg, path, depth);
     process.stdout.write(added ? `Added root: ${path}\n` : `Root already configured: ${path}\n`);
     if (added) await clearCache();

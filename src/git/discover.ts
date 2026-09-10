@@ -1,9 +1,17 @@
-import { readdir, stat } from 'node:fs/promises';
+import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type { Config, RootConfig } from '../config.js';
 import { expandPath } from '../config.js';
 import { matchesAny } from '../util/glob.js';
 import { pool } from '../util/pool.js';
+
+/**
+ * `normal`    - `.git` is a directory
+ * `worktree`  - `.git` file pointing into `.../worktrees/<name>`
+ * `submodule` - `.git` file pointing into `.../modules/<name>`
+ * `linked`    - `.git` file whose target is unrecognized or unreadable
+ */
+export type RepoKind = 'normal' | 'worktree' | 'submodule' | 'linked';
 
 export interface DiscoveredRepo {
   /** Absolute path to the working directory containing `.git`. */
@@ -12,9 +20,29 @@ export interface DiscoveredRepo {
   /** Expanded path of the configured root this repo was found under. */
   root: string;
   rootLabel: string | undefined;
-  /** True when `.git` is a file rather than a directory, which means a linked worktree. */
-  isLinkedWorktree: boolean;
+  /** How this working directory relates to its git metadata. */
+  kind: RepoKind;
   depth: number;
+}
+
+/**
+ * A `.git` file alone cannot tell a linked worktree from a submodule: both are
+ * pointer files. The gitdir target distinguishes them.
+ */
+export async function classifyGitEntry(dir: string, gitIsFile: boolean): Promise<RepoKind> {
+  if (!gitIsFile) return 'normal';
+  try {
+    const text = await readFile(join(dir, '.git'), 'utf8');
+    const match = /^gitdir:\s*(.+)$/m.exec(text);
+    if (!match) return 'linked';
+
+    const segments = (match[1] ?? '').trim().replace(/\\/g, '/').split('/');
+    if (segments.includes('worktrees')) return 'worktree';
+    if (segments.includes('modules')) return 'submodule';
+    return 'linked';
+  } catch {
+    return 'linked';
+  }
 }
 
 export interface DiscoverResult {
@@ -59,6 +87,12 @@ async function scanRoot(
   const repos: DiscoveredRepo[] = [];
   let scannedDirs = 0;
 
+  // Only tracked when following symlinks, where a link such as `loop -> .`
+  // would otherwise be traversed once per level. Lexical dedupe cannot catch
+  // those, since each pass yields a distinct path.
+  const visited = new Set<string>();
+  if (cfg.followSymlinks) visited.add(await canonical(abs));
+
   // Breadth-first, one level at a time, so `concurrency` applies across siblings.
   let frontier: Array<{ dir: string; depth: number }> = [{ dir: abs, depth: 0 }];
 
@@ -71,7 +105,14 @@ async function scanRoot(
     const nextFrontier: Array<{ dir: string; depth: number }> = [];
     for (const r of results) {
       if (r.repo) repos.push(r.repo);
-      nextFrontier.push(...r.children);
+      for (const child of r.children) {
+        if (cfg.followSymlinks) {
+          const real = await canonical(child.dir);
+          if (visited.has(real)) continue;
+          visited.add(real);
+        }
+        nextFrontier.push(child);
+      }
     }
     frontier = nextFrontier;
   }
@@ -109,7 +150,7 @@ async function visit(
       name: basename(dir),
       root: rootAbs,
       rootLabel: root.label,
-      isLinkedWorktree: gitEntry.isFile(),
+      kind: await classifyGitEntry(dir, gitEntry.isFile()),
       depth,
     };
   }
@@ -156,6 +197,15 @@ function dedupe(repos: readonly DiscoveredRepo[]): DiscoveredRepo[] {
     out.push(r);
   }
   return out;
+}
+
+/** Resolves symlinks so the same physical directory is only queued once. */
+async function canonical(p: string): Promise<string> {
+  try {
+    return await realpath(p);
+  } catch {
+    return p;
+  }
 }
 
 async function isReadableDir(p: string): Promise<boolean> {

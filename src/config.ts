@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { mkdir, readFile, writeFile, access } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, rm, access } from 'node:fs/promises';
 
 export type PackageManager = 'pnpm' | 'npm' | 'yarn' | 'bun';
 
@@ -112,10 +112,41 @@ async function seedRoots(): Promise<RootConfig[]> {
   return found.length > 0 ? found : [{ path: '~' , maxDepth: 3 }];
 }
 
+/**
+ * Validates and normalizes the `roots` array. A bare string is accepted as
+ * shorthand for `{ path }`. Malformed entries raise instead of reaching
+ * discovery, where they would fail with an opaque property access.
+ */
+export function normalizeRoots(value: unknown): RootConfig[] {
+  if (!Array.isArray(value)) throw new Error('"roots" must be an array');
+
+  return value.map((entry, index) => {
+    if (typeof entry === 'string') {
+      if (entry.trim() === '') throw new Error(`roots[${index}] is an empty string`);
+      return { path: entry };
+    }
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`roots[${index}] must be an object with a "path" string`);
+    }
+
+    const raw = entry as Record<string, unknown>;
+    const path = raw['path'];
+    if (typeof path !== 'string' || path.trim() === '') {
+      throw new Error(`roots[${index}] is missing a "path" string`);
+    }
+
+    const out: RootConfig = { path };
+    if (typeof raw['maxDepth'] === 'number') out.maxDepth = raw['maxDepth'];
+    if (typeof raw['enabled'] === 'boolean') out.enabled = raw['enabled'];
+    if (typeof raw['label'] === 'string') out.label = raw['label'];
+    return out;
+  });
+}
+
 /** Fills in any key the user left out, so a partial config file is always valid. */
 function merge(raw: Partial<Config>, base: Config): Config {
   return {
-    roots: Array.isArray(raw.roots) ? raw.roots : base.roots,
+    roots: raw.roots === undefined ? base.roots : normalizeRoots(raw.roots),
     ignore: Array.isArray(raw.ignore) ? raw.ignore : base.ignore,
     pruneDirs: Array.isArray(raw.pruneDirs) ? raw.pruneDirs : base.pruneDirs,
     maxDepth: typeof raw.maxDepth === 'number' ? raw.maxDepth : base.maxDepth,
@@ -145,13 +176,32 @@ export async function loadConfig(): Promise<Config> {
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(`Config at ${file} is not valid JSON: ${reason}`);
   }
-  return merge(raw, defaults([]));
+
+  // An omitted `roots` key falls back to the first-run seed. An explicit
+  // empty array is honoured, and means "scan nothing".
+  const base = defaults(raw.roots === undefined ? await seedRoots() : []);
+  try {
+    return merge(raw, base);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`Config at ${file}: ${reason}`);
+  }
 }
 
 export async function saveConfig(cfg: Config): Promise<void> {
   const file = configPath();
   await mkdir(dirname(file), { recursive: true });
-  await writeFile(file, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8');
+
+  // Write to a sibling temp file and rename, so an interrupted write cannot
+  // truncate a working config and lock the user out of their roots.
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    await writeFile(tmp, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8');
+    await rename(tmp, file);
+  } catch (err) {
+    await rm(tmp, { force: true });
+    throw err;
+  }
 }
 
 /** Adds a root, refusing duplicates after path expansion. Returns false if already present. */

@@ -13,7 +13,9 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
-    "start": "node dist/cli.js"
+    "start": "node dist/cli.js",
+    "test": "node --test \"dist/**/*.test.js\"",
+    "check": "tsc --noEmit && tsc && node --test \"dist/**/*.test.js\""
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
