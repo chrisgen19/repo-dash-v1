@@ -251,3 +251,40 @@ test('concurrent git reads all settle', async () => {
   );
   assert.equal(results.filter((r) => r.code === 0).length, 20);
 });
+
+test('a bare repository stays the parent of its worktrees', async (t) => {
+  // Regression: git reports the bare git directory first, like it does for a
+  // submodule, but here the later entries are real worktrees. Promoting the
+  // anchor listed the same checkout as both the main row and its own child.
+  const root = await sandbox();
+  await initRepo(join(root, 'src'));
+  const clone = await runGit(root, ['clone', '-q', '--bare', join(root, 'src'), join(root, 'bare.git')]);
+  if (clone.code !== 0) return t.skip('bare clone unavailable');
+  await mkdir(join(root, 'scanned'), { recursive: true });
+  await runGit(join(root, 'bare.git'), ['worktree', 'add', '-q', join(root, 'scanned', 'wt'), 'main']);
+
+  const groups = await groupsFor(join(root, 'scanned'));
+  assert.equal(groups.length, 1);
+  const group = groups[0];
+  assert.equal(group?.kind, 'bare');
+  assert.equal(group?.path, join(root, 'bare.git'), 'the bare repository is the parent');
+  assert.equal(group?.worktrees.length, 1);
+  assert.notEqual(group?.worktrees[0]?.path, group?.path, 'the checkout is not also the parent row');
+  assert.equal(group?.worktrees[0]?.name, 'wt');
+});
+
+test('a git directory path ending in whitespace is preserved', async (t) => {
+  // Regression: trim() removed the trailing space, naming a path that does not
+  // exist and merging repositories whose git dirs differ only by whitespace.
+  const root = await sandbox();
+  const gitDir = join(root, 'gitdir ');
+  const work = join(root, 'scanned', 'app');
+  await mkdir(join(root, 'scanned'), { recursive: true });
+  const init = await runGit(root, ['init', '-q', `--separate-git-dir=${gitDir}`, work]);
+  if (init.code !== 0) return t.skip('separate-git-dir unavailable on this platform');
+  await runGit(work, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'i']);
+
+  const groups = await groupsFor(join(root, 'scanned'));
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0]?.commonDir, gitDir, 'the trailing space belongs to the path');
+});

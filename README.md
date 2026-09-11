@@ -72,8 +72,9 @@ repo-dash cache clear
 ```
 
 Repositories are labelled by kind: a plain checkout is unmarked, while linked
-worktrees show `(worktree)`, submodules show `(submodule)`, and a `.git` pointer
-file with an unrecognized target shows `(linked)`.
+worktrees show `(worktree)`, submodules show `(submodule)`, a bare repository
+that owns a scanned worktree shows `(bare)`, and a `.git` pointer file with an
+unrecognized target shows `(linked)`.
 
 ### Reading the status table
 

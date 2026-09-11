@@ -10,8 +10,9 @@ import { pool } from '../util/pool.js';
  * `worktree`  - `.git` file pointing into `.../worktrees/<name>`
  * `submodule` - `.git` file pointing into `.../modules/<name>`
  * `linked`    - `.git` file whose target is unrecognized or unreadable
+ * `bare`      - a bare repository, reported by git rather than discovered
  */
-export type RepoKind = 'normal' | 'worktree' | 'submodule' | 'linked';
+export type RepoKind = 'normal' | 'worktree' | 'submodule' | 'linked' | 'bare';
 
 export interface DiscoveredRepo {
   /** Absolute path to the working directory containing `.git`. */

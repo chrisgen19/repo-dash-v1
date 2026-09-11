@@ -58,8 +58,10 @@ async function probe(repo: DiscoveredRepo, timeoutMs: number): Promise<Probe> {
     readStatus(repo.path, timeoutMs),
     readLastCommit(repo.path, timeoutMs),
   ]);
-  // Fall back to the repo path so an unreadable repo still forms its own group.
-  const commonDir = common.code === 0 ? common.stdout.trim() : repo.path;
+  // Only the line terminator is stripped: a git directory path may legally end
+  // in whitespace, and trimming it would name a path that does not exist.
+  const reported = common.stdout.replace(/\r?\n$/, '');
+  const commonDir = common.code === 0 && reported !== '' ? reported : repo.path;
   return { repo, commonDir, status, lastCommit };
 }
 
@@ -141,10 +143,13 @@ async function buildGroup(
   // git lists the main worktree first. Without it, treat the anchor as main.
   const main = worktrees[0];
   const listed = main?.path ?? anchor.repo.path;
-  // Inside a submodule, and for a bare repository, git reports the git
-  // directory rather than a checkout. That path is not a working tree, so the
-  // anchor is the real main here.
-  const reportedMain = listed === commonDir ? anchor.repo.path : listed;
+  // Inside a submodule git reports the git directory rather than a checkout,
+  // and there is no working tree to stand in for it, so the anchor is the real
+  // main. A bare repository also reports its git directory first, but that
+  // entry is flagged bare and the entries after it are genuine worktrees, so
+  // promoting the anchor there would list one checkout twice.
+  const listedIsGitDir = listed === commonDir && main?.bare !== true;
+  const reportedMain = listedIsGitDir ? anchor.repo.path : listed;
   const mainProbe = await find(reportedMain);
   const source = mainProbe ?? anchor;
   // Prefer the path the user configured, so a symlinked root stays recognizable.
@@ -160,6 +165,8 @@ async function buildGroup(
   for (const wt of worktrees.slice(1)) {
     const known = await find(wt.path);
     const path = known?.repo.path ?? wt.path;
+    // Defensive: whatever became the main row is never also a child of it.
+    if (path === mainPath || wt.path === reportedMain) continue;
     if (await isHidden(path, hidden)) continue;
     if (path !== wt.path && (await isHidden(wt.path, hidden))) continue;
     linked.push(wt);
@@ -175,7 +182,9 @@ async function buildGroup(
     commonDir,
     // The anchor may be a linked worktree, so its kind must not stand in for
     // the main checkout's. Read the reported main path instead.
-    kind: mainProbe?.repo.kind ?? (await classifyRepoPath(reportedMain)),
+    kind: main?.bare === true && mainProbe === undefined
+      ? 'bare'
+      : mainProbe?.repo.kind ?? (await classifyRepoPath(reportedMain)),
     rootLabel: source.repo.rootLabel,
     discovered: mainProbe !== undefined,
     status: mainProbe ? mainProbe.status : main ? await readStatus(mainPath, timeoutMs) : source.status,
