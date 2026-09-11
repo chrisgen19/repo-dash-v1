@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,4 +52,34 @@ test('status without --json explains what to do next', async () => {
   const { stdout } = await run(['status', '--refresh'], home);
   assert.match(stdout, /No repositories found/);
   assert.match(stdout, /roots add/);
+});
+
+const exec = promisify(execFile);
+
+test('the summary counts a dirty worktree under a clean repository', async () => {
+  // Regression: the summary read only each group's main status, so it said
+  // "0 dirty" while the expanded table showed a dirty worktree above it.
+  const home = await mkdtemp(join(tmpdir(), 'repo-dash-sum-'));
+  const root = join(home, 'work');
+  await mkdir(join(root, 'app'), { recursive: true });
+  await exec('git', ['init', '-q', '-b', 'main'], { cwd: join(root, 'app') });
+  await exec('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'i'], { cwd: join(root, 'app') });
+  await exec('git', ['worktree', 'add', '-q', join(root, 'wt'), '-b', 'b'], { cwd: join(root, 'app') });
+  await writeFile(join(root, 'wt', 'new.txt'), 'x', 'utf8');
+
+  await mkdir(join(home, 'repo-dash'), { recursive: true });
+  await writeFile(
+    join(home, 'repo-dash', 'config.json'),
+    JSON.stringify({ roots: [{ path: root }] }),
+    'utf8',
+  );
+
+  const { stdout } = await run(['status', '--expand', '--refresh'], home);
+  assert.match(stdout, /1 dirty working tree/, `summary should count the worktree:\n${stdout}`);
+});
+
+test('counts are singular when there is one of something', async () => {
+  const home = await emptyConfigHome();
+  const { stdout } = await run(['status', '--json', '--refresh'], home);
+  assert.doesNotMatch(stdout, /1 repositories/);
 });

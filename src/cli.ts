@@ -128,6 +128,10 @@ async function cmdList(_rest: string[], refresh: boolean, json: boolean): Promis
   return 0;
 }
 
+function plural(count: number, singular: string, many = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : many}`;
+}
+
 async function cmdStatus(refresh: boolean, expand: boolean, json: boolean): Promise<number> {
   const cfg = await loadConfig();
   const { repos, missingRoots } = await getRepos(cfg, refresh);
@@ -156,9 +160,15 @@ async function cmdStatus(refresh: boolean, expand: boolean, json: boolean): Prom
   process.stdout.write(`${renderTable(groups, { expand })}\n`);
 
   const worktrees = groups.reduce((n, g) => n + g.worktrees.length, 0);
-  const dirty = groups.filter((g) => (g.status?.dirty ?? 0) > 0).length;
+  // Counts every working tree with changes, main and linked alike, so the
+  // summary cannot contradict a dirty worktree shown under --expand.
+  const dirty =
+    groups.filter((g) => (g.status?.dirty ?? 0) > 0).length +
+    groups.reduce((n, g) => n + g.worktrees.filter((w) => (w.status?.dirty ?? 0) > 0).length, 0);
   process.stdout.write(
-    `\n${groups.length} repositories, ${worktrees} linked worktrees, ${dirty} dirty, read in ${Date.now() - started}ms\n`,
+    `\n${plural(groups.length, 'repository', 'repositories')}, ` +
+      `${plural(worktrees, 'linked worktree')}, ` +
+      `${plural(dirty, 'dirty working tree')}, read in ${Date.now() - started}ms\n`,
   );
   return 0;
 }

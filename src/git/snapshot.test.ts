@@ -124,3 +124,48 @@ test('git subprocesses respect the configured concurrency', async () => {
   await buildGroups(repos, cfg);
   assert.equal(gitConcurrency(), 2, 'buildGroups applies the configured limit to the shared git limiter');
 });
+
+test('hiding a linked worktree removes it from its group', async () => {
+  // Regression: discovery dropped it, but git listed it again unfiltered.
+  const root = await sandbox();
+  await initRepo(join(root, 'app'));
+  await runGit(join(root, 'app'), ['worktree', 'add', '-q', join(root, 'app-wt'), '-b', 'wtb']);
+
+  const cfg = config(root);
+  cfg.repos = { [join(root, 'app-wt')]: { hidden: true } };
+  const { repos } = await discoverRepos(cfg);
+  const groups = await buildGroups(repos, cfg);
+
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0]?.name, 'app');
+  assert.equal(groups[0]?.worktrees.length, 0, 'the hidden worktree should not return via git');
+});
+
+test('hiding a main checkout hides the repository and its worktrees', async () => {
+  // Regression: the group came back through git's own listing, rendered as
+  // external and carrying the worktree's kind.
+  const root = await sandbox();
+  await initRepo(join(root, 'app'));
+  await runGit(join(root, 'app'), ['worktree', 'add', '-q', join(root, 'app-wt'), '-b', 'wtb']);
+  await initRepo(join(root, 'other'));
+
+  const cfg = config(root);
+  cfg.repos = { [join(root, 'app')]: { hidden: true } };
+  const { repos } = await discoverRepos(cfg);
+  const groups = await buildGroups(repos, cfg);
+
+  assert.deepEqual(groups.map((g) => g.name), ['other']);
+});
+
+test('hiding is matched through a symlinked root', async () => {
+  const root = await sandbox();
+  await mkdir(join(root, 'real'), { recursive: true });
+  await initRepo(join(root, 'real', 'app'));
+  await symlink(join(root, 'real'), join(root, 'alias'));
+
+  const cfg = config(join(root, 'alias'));
+  // Configured against the canonical path while the root uses the alias.
+  cfg.repos = { [join(root, 'real', 'app')]: { hidden: true } };
+  const { repos } = await discoverRepos(cfg);
+  assert.equal((await buildGroups(repos, cfg)).length, 0);
+});

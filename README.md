@@ -48,7 +48,7 @@ repo-dash config path                    # print the config location
 | `concurrency` | `number` | Ceiling on parallel directory reads, and a shared ceiling on git subprocesses across every phase of a read. |
 | `editor` | `string` | Command used by the open-in-editor key. Defaults to `$VISUAL`, then `$EDITOR`, then `code`. |
 | `cacheTtlSeconds` | `number` | How long discovery results stay cached. |
-| `repos` | `Record<path, override>` | Per-repo `devCommand`, `devScript`, `packageManager`, `hidden`. |
+| `repos` | `Record<path, override>` | Per-repo `devCommand`, `devScript`, `packageManager`, `hidden`. Paths are matched in both configured and canonical form, so a symlinked root still resolves. |
 
 Example of a per-repo override:
 
@@ -98,6 +98,11 @@ Linked worktrees are folded into their parent repository, so a worktree that
 happens to sit inside a scanned root is listed once rather than as a repo of
 its own. Submodules keep their own git directory and so remain separate
 repositories.
+
+Marking a path `hidden` removes it from the table. Hiding a main checkout
+hides that repository whole, its worktrees included; hiding a single linked
+worktree removes only that row. The dirty count in the summary line covers
+every working tree shown, main checkouts and linked worktrees alike.
 
 The discovery cache is keyed by the settings that affect results, including
 expanded root paths and per-repo `hidden` overrides, so an edit takes effect on
