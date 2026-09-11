@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRootsAdd, splitCommand } from './args.js';
+import { isTerminalEditor, parseRootsAdd, splitCommand } from './args.js';
 
 test('option value is not mistaken for the path', () => {
   // Regression: `--depth 2 ~/src` used to add a root literally named "2".
@@ -49,4 +49,31 @@ test('splitCommand separates an executable from its arguments', () => {
   assert.deepEqual(splitCommand('"/opt/my editor/bin" -f'), ['/opt/my editor/bin', '-f']);
   assert.deepEqual(splitCommand("'my editor' --wait"), ['my editor', '--wait']);
   assert.deepEqual(splitCommand(''), []);
+});
+
+test('terminal editors are told apart from windowed ones', () => {
+  // Regression: a terminal editor spawned detached with no stdio gets no
+  // terminal and hangs in the background.
+  for (const cmd of ['vim', 'nvim', 'vi', 'nano', 'helix', 'hx', 'emacs', '/usr/bin/vim']) {
+    const [exe, ...args] = splitCommand(cmd);
+    assert.equal(isTerminalEditor(exe as string, args), true, cmd);
+  }
+  for (const cmd of ['code', 'code --wait', 'subl -w', 'gvim', 'notepad.exe']) {
+    const [exe, ...args] = splitCommand(cmd);
+    assert.equal(isTerminalEditor(exe as string, args), false, cmd);
+  }
+  // gvim only draws in the terminal when asked to.
+  assert.equal(isTerminalEditor('gvim', ['-v']), true);
+  assert.equal(isTerminalEditor('gvim', ['-nw']), true);
+});
+
+test('a Windows editor path is recognised', () => {
+  // Regression: splitting on "/" alone left "C:\\...\\vim" unmatched, so a
+  // terminal editor was launched detached and hung with no terminal.
+  for (const cmd of ['"C:\\\\Program Files\\\\Vim\\\\vim.exe"', 'C:\\\\tools\\\\nvim.exe']) {
+    const [exe, ...args] = splitCommand(cmd);
+    assert.equal(isTerminalEditor(exe as string, args), true, cmd);
+  }
+  const [code] = splitCommand('"C:\\\\Program Files\\\\Microsoft VS Code\\\\code.exe"');
+  assert.equal(isTerminalEditor(code as string, []), false);
 });

@@ -1,15 +1,15 @@
 # repo-dash
 
-Multi-repo git dashboard for the terminal: status across every repository, expandable
-worktrees, and dev-server start/stop backed by tmux.
+Multi-repo git dashboard for the terminal: status across every repository and
+expandable worktrees, with tmux-backed dev-server control planned.
 
-Status: phase 2 of 6 (config, discovery, cache, git status and worktrees).
-The TUI lands in phase 3.
+Status: phase 3 of 6 (config, discovery, cache, git status, worktrees, and the
+interactive dashboard). Dev-server control lands in phase 4.
 
 ## Install
 
 ```bash
-pnpm install
+pnpm install     # requires Node 22 or newer
 pnpm build
 pnpm link --global    # provides the `repo-dash` command
 ```
@@ -38,7 +38,7 @@ repo-dash config path                    # print the config location
 
 | Key | Type | Purpose |
 |---|---|---|
-| `roots[]` | `{path, maxDepth?, enabled?, label?}` | Trees to scan. `~`, `$VAR` and `${VAR}` are expanded. A bare string is shorthand for `{ "path": ... }`. Omitting the key re-seeds the defaults; an explicit `[]` means scan nothing. |
+| `roots[]` | `{path, maxDepth?, enabled?, label?}` | Trees to scan. `~`, `$VAR` and `${VAR}` are expanded. A bare string is shorthand for `{ "path": ... }`. Omitting the key re-seeds the defaults; an explicit `[]` means scan nothing. A `label` groups that root's repositories under a heading. |
 | `ignore` | `string[]` | Skip patterns matched on the absolute path. `*` within a segment, `**` across segments. A bare word like `"docs"` matches any segment of that name. |
 | `pruneDirs` | `string[]` | Directory names never descended into, at any depth. |
 | `maxDepth` | `number` | Default descent depth, overridable per root. |
@@ -61,7 +61,12 @@ Example of a per-repo override:
 
 ## Commands
 
+Options may come before the command, so `repo-dash --refresh` opens the
+dashboard on a fresh scan.
+
 ```bash
+repo-dash                  # interactive dashboard (falls back to a table when piped)
+repo-dash --refresh        # dashboard, bypassing the discovery cache
 repo-dash status           # branch, ahead/behind, dirty counts, worktree count
 repo-dash status --expand  # with linked worktrees nested under each repo
 repo-dash status --json    # machine-readable
@@ -110,6 +115,56 @@ expanded root paths and per-repo `hidden` overrides, so an edit takes effect on
 the next run rather than after the TTL. A cache that cannot be written produces
 a warning; the listing still succeeds.
 
+## Dashboard
+
+Running `repo-dash` with no arguments in a terminal opens the interactive
+dashboard. Piping or redirecting it prints the static `status` table instead,
+so `repo-dash | less` and `repo-dash > out.txt` still behave.
+
+| Key | Action |
+|---|---|
+| `j` / `k`, arrows | Move the selection |
+| `PgUp` / `PgDn`, `g` / `G` | Jump by ten, or to the ends |
+| `Enter`, `Space` | Expand or collapse a repository's worktrees |
+| `E` / `C` | Expand all, collapse all |
+| `/` | Search by name, branch or path, including inside collapsed repositories. `Enter` keeps it, `Esc` clears it |
+| `D` | Show only repositories with changes, worktrees included |
+| `o` | Open the selected row in `editor` |
+| `r` / `R` | Reload, or reload bypassing the discovery cache |
+| `q` | Quit |
+
+Columns shrink to the terminal width, taking from `BRANCH` first, then `REPO`,
+then `LAST COMMIT`. Below roughly 56 columns the minimum widths cannot all fit,
+so columns are dropped instead of overflowing: `LAST COMMIT` goes first, then
+`WT`, `AHEAD/BEHIND`, `DIRTY` and `BRANCH`. `REPO` is never dropped. The
+selection is tracked by path rather than position, so it stays put across a
+reload.
+
+Searching looks inside collapsed repositories and matches a worktree on its own
+name, branch and path, revealing matches without expanding first.
+
+Giving a root a `label` groups its repositories under a heading, which is useful
+for separating, say, personal work from client work:
+
+```json
+"roots": [
+  { "path": "~/projects", "label": "personal" },
+  { "path": "~/ag-projects", "label": "work" }
+]
+```
+
+Headings are labels rather than entries, so the cursor skips them and the
+position counter reports only real repositories.
+
+The dashboard needs both stdin and stdout to be terminals. Redirecting either
+one prints the static table instead, so `repo-dash < /dev/null` and
+`repo-dash | less` both behave. Widths are measured in terminal cells, so CJK
+names, emoji and combining accents line up and are never cut mid-glyph.
+
+`o` hands the terminal to a terminal editor such as Vim, Nano or Helix and
+takes it back when the editor exits. A windowed editor such as VS Code is
+detached instead, so quitting the dashboard does not close it.
+
 ## Layout
 
 ```
@@ -123,6 +178,9 @@ src/
   git/worktree.ts   worktree list --porcelain -z parser
   git/log.ts        last-commit reader
   git/snapshot.ts   groups worktrees with their parent repository
+  ui/app.tsx        interactive dashboard
+  ui/rows.ts        shared row model and column fitting
+  ui/format.ts      status formatting and label escaping
   ui/table.ts       plain-text table renderer
   util/args.ts      argument parsing
   util/fs.ts        canonical path resolution

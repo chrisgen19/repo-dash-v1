@@ -7,7 +7,11 @@ import { discoverRepos } from './git/discover.js';
 import type { DiscoveredRepo } from './git/discover.js';
 import { clearCache, readCache, writeCache } from './cache.js';
 import { buildGroups } from './git/snapshot.js';
+import type { RepoGroup } from './git/snapshot.js';
 import { renderTable } from './ui/table.js';
+import { cellWidth, padCells } from './ui/format.js';
+import { launchEditor } from './ui/editor.js';
+import type { Suspend } from './ui/editor.js';
 import { parseRootsAdd, splitCommand } from './util/args.js';
 
 // Piping into a pager or `head` closes stdout early. Without this, the
@@ -20,7 +24,7 @@ process.stdout.on('error', (err: NodeJS.ErrnoException) => {
 const HELP = `repo-dash - multi-repo git dashboard
 
 Usage
-  repo-dash                      Launch the dashboard (available from phase 3)
+  repo-dash                      Launch the interactive dashboard
   repo-dash status [--expand]    Branch, ahead/behind and dirty counts per repo
   repo-dash list [--json]        List discovered repositories
   repo-dash roots                Show configured scan roots
@@ -37,20 +41,45 @@ Options
   -h, --help    Show this help
 `;
 
+/** Options accepted before a command; everything else belongs to the subcommand. */
+const GLOBAL_FLAGS = new Set(['--refresh', '--json', '--expand', '-h', '--help']);
+
 async function main(argv: string[]): Promise<number> {
   if (argv.includes('-h') || argv.includes('--help')) {
     process.stdout.write(HELP);
     return 0;
   }
 
-  const [command, ...rest] = argv;
+  // Options may precede the command, so `repo-dash --refresh` still selects the
+  // default dashboard. Only leading options are consumed here: everything from
+  // the command onwards belongs to that subcommand, so `roots add <path>
+  // --depth 2` keeps both halves of its own option.
+  let cursor = 0;
+  while (cursor < argv.length && (argv[cursor] as string).startsWith('-')) {
+    const flag = (argv[cursor] as string).split('=')[0] as string;
+    if (!GLOBAL_FLAGS.has(flag)) {
+      process.stderr.write(`Unknown option: ${argv[cursor] as string}\n\n${HELP}`);
+      return 1;
+    }
+    cursor++;
+  }
+  const leading = argv.slice(0, cursor);
+  const [command, ...rest] = argv.slice(cursor);
+
+  const hasFlag = (name: string): boolean => leading.includes(name) || rest.includes(name);
+  const refresh = hasFlag('--refresh');
 
   switch (command) {
     case undefined:
+      // Both streams must be terminals: Ink cannot put a redirected stdin into
+      // raw mode, so the dashboard would render without accepting any keys.
+      return process.stdout.isTTY === true && process.stdin.isTTY === true
+        ? cmdDashboard(refresh)
+        : cmdStatus(refresh, true, false);
     case 'list':
-      return cmdList(rest, argv.includes('--refresh'), argv.includes('--json'));
+      return cmdList(rest, refresh, hasFlag('--json'));
     case 'status':
-      return cmdStatus(argv.includes('--refresh'), argv.includes('--expand'), argv.includes('--json'));
+      return cmdStatus(refresh, hasFlag('--expand'), hasFlag('--json'));
     case 'roots':
       return cmdRoots(rest);
     case 'config':
@@ -117,14 +146,41 @@ async function cmdList(_rest: string[], refresh: boolean, json: boolean): Promis
     return 0;
   }
 
-  const width = Math.max(...repos.map((r) => r.name.length));
+  // Cells, not code units, so a CJK or emoji name still lines up.
+  const width = Math.max(...repos.map((r) => cellWidth(r.name)));
   for (const repo of repos) {
     const marker = repo.kind === 'normal' ? '' : ` (${repo.kind})`;
-    process.stdout.write(`${repo.name.padEnd(width)}  ${repo.path}${marker}\n`);
+    process.stdout.write(`${padCells(repo.name, width)}  ${repo.path}${marker}\n`);
   }
 
   const timing = cached ? 'from cache' : `scanned in ${elapsedMs}ms`;
   process.stdout.write(`\n${repos.length} repositories, ${timing}\n`);
+  return 0;
+}
+
+/** Launches the Ink dashboard. Ink is imported lazily so subcommands stay fast. */
+async function cmdDashboard(refresh: boolean): Promise<number> {
+  const cfg = await loadConfig();
+  const [{ render }, { App }, { createElement }] = await Promise.all([
+    import('ink'),
+    import('./ui/app.js'),
+    import('react'),
+  ]);
+
+  let first = refresh;
+  const load = async (force: boolean): Promise<{ groups: RepoGroup[]; warnings: string[] }> => {
+    const { repos, missingRoots } = await getRepos(cfg, force || first);
+    first = false;
+    const warnings = missingRoots.map((r) => `root not found, skipped: ${r}`);
+    if (repos.length === 0) return { groups: [], warnings };
+    return { groups: await buildGroups(repos, cfg), warnings };
+  };
+
+  const openInEditor = (path: string, suspend: Suspend): Promise<void> =>
+    launchEditor(cfg.editor, path, suspend);
+
+  const instance = render(createElement(App, { load, openInEditor }));
+  await instance.waitUntilExit();
   return 0;
 }
 
