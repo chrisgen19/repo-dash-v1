@@ -209,8 +209,9 @@ a session's pane, so a server started as tmux → pnpm → node is still matched
 
 `l` opens a pane under the table showing the selected server's recent output,
 re-read once a second and following the selection as it moves. The pane takes
-at most half the space left after the table, and the same output is available
-as `repo-dash dev logs <repo>`.
+at most half the space left after the table and always leaves the table at
+least one row; in a terminal too short for that, it stays hidden and the footer
+says so. The same output is available as `repo-dash dev logs <repo>`.
 
 Output comes from `tmux capture-pane`, which strips escape sequences already.
 Carriage returns are collapsed to the last segment of each line, so progress

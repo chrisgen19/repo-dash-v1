@@ -272,9 +272,20 @@ export function App({ load, openInEditor, devAction, readLog }: AppProps): React
     }
 
     let cancelled = false;
+    let inFlight = false;
     const refreshLog = async (): Promise<void> => {
-      const view = await readLog(selectedPath, LOG_LIMIT);
-      if (!cancelled && mounted.current) setLog(view);
+      // A read slower than the interval must not overlap the next tick: an
+      // older answer could land after a newer one, and captures would pile up.
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const view = await readLog(selectedPath, LOG_LIMIT);
+        if (!cancelled && mounted.current) setLog(view);
+      } catch {
+        // Keep showing the last good output; the next tick retries.
+      } finally {
+        inFlight = false;
+      }
     };
 
     void refreshLog();
@@ -301,10 +312,14 @@ export function App({ load, openInEditor, devAction, readLog }: AppProps): React
   const shownWarnings = warnings.slice(0, MAX_WARNINGS);
   const hiddenWarnings = warnings.length - shownWarnings.length;
   const footerLines = 1 /* margin */ + shownWarnings.length + (hiddenWarnings > 0 ? 1 : 0) + 2;
-  // The pane takes at most half of what is left, so the table stays usable.
+  // The pane takes at most half of what is left, and never the table's last
+  // row. When even its minimum will not fit beside one table row it is hidden
+  // rather than allowed to push the frame past the terminal.
   const available = Math.max(1, height - 1 /* header */ - footerLines);
-  const logHeight = logOpen
-    ? Math.max(0, Math.min(LOG_MAX_HEIGHT, Math.max(LOG_MIN_HEIGHT, Math.floor(available / 2))))
+  const room = available - 1;
+  const logFits = logOpen && room >= LOG_MIN_HEIGHT;
+  const logHeight = logFits
+    ? Math.min(room, LOG_MAX_HEIGHT, Math.max(LOG_MIN_HEIGHT, Math.floor(available / 2)))
     : 0;
   const viewport = Math.max(1, available - logHeight);
   const start = Math.min(Math.max(0, index - Math.floor(viewport / 2)), Math.max(0, rows.length - viewport));
@@ -331,8 +346,15 @@ export function App({ load, openInEditor, devAction, readLog }: AppProps): React
           <RowLine key={row.key} row={row} widths={widths} selected={row.key === selected} />
         ))
       )}
-      {logOpen ? (
-        <LogPane view={log} width={width} height={logHeight} path={selectedPath} />
+      {logFits ? (
+        <LogPane
+          // Output from the previous selection must not appear under the new
+          // heading while the new read is still in flight.
+          view={log !== null && log.path === selectedPath ? log : null}
+          width={width}
+          height={logHeight}
+          path={selectedPath}
+        />
       ) : null}
       <Footer
         width={width}
@@ -346,6 +368,7 @@ export function App({ load, openInEditor, devAction, readLog }: AppProps): React
         status={status}
         warnings={shownWarnings}
         hiddenWarnings={hiddenWarnings}
+        logHidden={logOpen && !logFits}
       />
     </Box>
   );
@@ -482,14 +505,18 @@ interface FooterProps {
   status: string | null;
   warnings: string[];
   hiddenWarnings: number;
+  /** The pane is toggled on but the terminal is too short to show it. */
+  logHidden: boolean;
 }
 
 function Footer(props: FooterProps): React.ReactElement {
   const {
     width, total, position, groups, loading, filter, query, searching, status, warnings, hiddenWarnings,
+    logHidden,
   } = props;
   const bits = [`${position}/${total}`, `${groups} repos`];
   if (filter === 'dirty') bits.push('dirty only');
+  if (logHidden) bits.push('logs hidden: terminal too short');
   if (loading) bits.push('reading…');
 
   return (
@@ -507,7 +534,9 @@ function Footer(props: FooterProps): React.ReactElement {
       ) : (
         <Text dimColor>{fitHints(HINTS, width)}</Text>
       )}
-      <Text dimColor>{bits.join('  ·  ')}{query !== '' && !searching ? `  ·  filter "${query}"` : ''}</Text>
+      <Text dimColor>
+        {truncate(`${bits.join('  ·  ')}${query !== '' && !searching ? `  ·  filter "${query}"` : ''}`, width)}
+      </Text>
     </Box>
   );
 }

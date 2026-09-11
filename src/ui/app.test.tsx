@@ -68,6 +68,15 @@ function fakeStdin(): PassThrough {
 
 const tick = (ms = 10): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Rows a frame occupies. Blank lines count: a margin is a real row, and
+ * filtering them out is what hid the log pane's overflow.
+ */
+function frameHeight(frame: string): number {
+  const lines = frame.split('\n');
+  return frame.endsWith('\n') ? lines.length - 1 : lines.length;
+}
+
 // A failing assertion skips its own cleanup, and the log pane's interval would
 // then hold the event loop open for the rest of the run.
 const openInstances: Array<() => void> = [];
@@ -83,6 +92,43 @@ interface Harness {
   until: (predicate: () => boolean, label: string) => Promise<void>;
   cleanup: () => void;
   opened: string[];
+}
+
+/** Mounts with a custom log reader, for tests about timing. */
+async function mountWithLog(
+  groups: RepoGroup[],
+  read: (path: string) => Promise<string[]>,
+): Promise<Harness> {
+  const stdout = new FakeStdout();
+  const stdin = fakeStdin();
+  const load = async (): Promise<LoadResult> => ({ groups, warnings: [], dev: new Map() });
+  const readLog = async (path: string): Promise<{ path: string; lines: string[]; running: boolean; reason: string | null }> =>
+    ({ path, lines: await read(path), running: true, reason: null });
+
+  const instance = render(
+    createElement(App, { load, openInEditor: () => undefined, readLog }),
+    { stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream, exitOnCtrlC: false, patchConsole: false },
+  );
+  const unmount = (): void => instance.unmount();
+  openInstances.push(unmount);
+  const frame = (): string => stdout.last.replace(ANSI, '');
+  const until = async (predicate: () => boolean, label: string): Promise<void> => {
+    const deadline = Date.now() + 3000;
+    while (!predicate()) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}\n--- last frame ---\n${frame()}`);
+      await tick();
+    }
+  };
+  await until(() => frame().includes(groups[0]?.name ?? 'REPO'), 'the repository list to load');
+  return {
+    frame, until, opened: [],
+    press: async (keys: string): Promise<void> => { stdin.write(keys); await tick(); },
+    cleanup: () => {
+      instance.unmount();
+      const at = openInstances.indexOf(unmount);
+      if (at >= 0) openInstances.splice(at, 1);
+    },
+  };
 }
 
 interface MountOptions {
@@ -369,8 +415,8 @@ test('warnings shrink the viewport instead of overflowing the terminal', async (
     undefined, 120, many, 14,
   );
   await h.until(() => h.frame().includes('repo-00'), 'the first repository');
-  const lines = h.frame().split('\n').filter((l) => l !== '');
-  assert.ok(lines.length <= 14, `frame is ${lines.length} lines in a 14-row terminal`);
+  const used = frameHeight(h.frame());
+  assert.ok(used <= 14, `frame is ${used} lines in a 14-row terminal`);
   assert.match(h.frame(), /more warnings/, 'the extra warnings are summarised');
   h.cleanup();
 });
@@ -395,12 +441,13 @@ test('the open log pane does not push the frame past the terminal', async () => 
   // The pane's top margin counts toward its height, as the footer's does.
   const lines = Array.from({ length: 80 }, (_, i) => `log line ${i}`);
   const many = Array.from({ length: 30 }, (_, i) => group(`repo-${String(i).padStart(2, '0')}`));
-  for (const rows of [12, 20, 30]) {
+  for (const rows of [9, 10, 12, 20, 30]) {
     const h = await mount(many, undefined, 100, [], rows, lines);
     await h.press('l');
     await h.until(() => h.frame().includes('log line 79'), 'the pane content');
-    const used = h.frame().split('\n').filter((l) => l !== '').length;
+    const used = frameHeight(h.frame());
     assert.ok(used <= rows, `at ${rows} rows the frame used ${used}`);
+    assert.ok(h.frame().split('\n').some((l) => l.startsWith('repo-')), `at ${rows} rows the table keeps a row`);
     h.cleanup();
   }
 });
@@ -413,5 +460,53 @@ test('the pane follows the selection', async () => {
   await h.until(() => h.frame().includes('logs: alpha') && h.frame().includes('output'), 'the first repository');
   await h.press('j');
   await h.until(() => h.frame().includes('logs: beta'), 'the second repository');
+  h.cleanup();
+});
+
+test('a terminal too short for the pane hides it and says so', async () => {
+  // Regression: at eight rows the pane took four, the table one, and the
+  // frame needed nine.
+  const lines = Array.from({ length: 40 }, (_, i) => `log line ${i}`);
+  const many = Array.from({ length: 20 }, (_, i) => group(`repo-${String(i).padStart(2, '0')}`));
+  for (const rows of [6, 7, 8]) {
+    const h = await mount(many, undefined, 100, [], rows, lines);
+    await h.press('l');
+    await h.until(() => h.frame().includes('logs hidden'), `the hidden notice at ${rows} rows`);
+    assert.ok(frameHeight(h.frame()) <= rows, `at ${rows} rows the frame used ${frameHeight(h.frame())}`);
+    assert.doesNotMatch(h.frame(), /log line/);
+    h.cleanup();
+  }
+});
+
+test("moving the selection never shows the previous repository's output", async () => {
+  // Regression: the old view stayed on screen under the new heading until
+  // the new read finished.
+  const stdoutGroups = [group('alpha'), group('beta')];
+  const h = await mountWithLog(stdoutGroups, async (path) => {
+    if (path === '/r/beta') await new Promise((r) => setTimeout(r, 600));
+    return [path === '/r/alpha' ? 'ALPHA-OUTPUT' : 'BETA-OUTPUT'];
+  });
+  await h.press('l');
+  await h.until(() => h.frame().includes('ALPHA-OUTPUT'), "alpha's output");
+  await h.press('j');
+  await h.until(() => h.frame().includes('logs: beta'), 'the new heading');
+  assert.doesNotMatch(h.frame(), /ALPHA-OUTPUT/, "alpha's output must not sit under beta's heading");
+  await h.until(() => h.frame().includes('BETA-OUTPUT'), "beta's output");
+  h.cleanup();
+});
+
+test('a slow log read is never overlapped by the next poll', async () => {
+  let inFlight = 0;
+  let peak = 0;
+  const h = await mountWithLog([group('alpha')], async () => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await new Promise((r) => setTimeout(r, 1300)); // slower than the 1s interval
+    inFlight--;
+    return ['output'];
+  });
+  await h.press('l');
+  await new Promise((r) => setTimeout(r, 2800));
+  assert.equal(peak, 1, `reads overlapped: ${peak} ran at once`);
   h.cleanup();
 });
