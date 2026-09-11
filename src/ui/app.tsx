@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { basename } from 'node:path';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import type { RepoGroup } from '../git/snapshot.js';
 import { cellWidth, padCells, sanitizeLabel, truncate } from './format.js';
 import { COLUMNS, buildRows, columnWidths, fitColumns, isSelectable, pruneHeadings } from './rows.js';
 import type { DevState } from '../proc/dev.js';
+import type { LogView } from '../proc/logs.js';
 import type { Row } from './rows.js';
 import type { Suspend } from './editor.js';
 
@@ -32,6 +34,8 @@ export interface AppProps {
    * `attach` hands over the terminal, so it receives the suspension too.
    */
   devAction?: (action: DevAction, path: string, suspend: Suspend) => Promise<string | null>;
+  /** Reads recent dev-server output for the log pane. */
+  readLog?: (path: string, limit: number) => Promise<LogView>;
 }
 
 type Filter = 'all' | 'dirty';
@@ -64,7 +68,7 @@ function terminalSize(stdout: { columns?: number; rows?: number }): { columns: n
   return { columns, rows };
 }
 
-export function App({ load, openInEditor, devAction }: AppProps): React.ReactElement {
+export function App({ load, openInEditor, devAction, readLog }: AppProps): React.ReactElement {
   const { exit, suspendTerminal } = useApp();
   const { stdout } = useStdout();
 
@@ -81,6 +85,8 @@ export function App({ load, openInEditor, devAction }: AppProps): React.ReactEle
   const [width, setWidth] = useState(() => terminalSize(stdout).columns);
   const [height, setHeight] = useState(() => terminalSize(stdout).rows);
   const [status, setStatus] = useState<string | null>(null);
+  const [logOpen, setLogOpen] = useState(false);
+  const [log, setLog] = useState<LogView | null>(null);
 
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
@@ -238,6 +244,7 @@ export function App({ load, openInEditor, devAction }: AppProps): React.ReactEle
         });
       return;
     }
+    if (input === 'l') { setLogOpen((open) => !open); return; }
     if (input === 'o') {
       if (current === undefined || current.kind === 'heading') return;
       const path = current.worktree?.path ?? current.group.path;
@@ -252,6 +259,42 @@ export function App({ load, openInEditor, devAction }: AppProps): React.ReactEle
         });
     }
   });
+
+  const selectedPath = current?.kind === 'heading'
+    ? null
+    : current?.worktree?.path ?? current?.group.path ?? null;
+
+  // While the pane is open, poll the selected session so output stays live.
+  useEffect(() => {
+    if (!logOpen || readLog === undefined || selectedPath === null) {
+      setLog(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+    let inFlight = false;
+    const refreshLog = async (): Promise<void> => {
+      // A read slower than the interval must not overlap the next tick: an
+      // older answer could land after a newer one, and captures would pile up.
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const view = await readLog(selectedPath, LOG_LIMIT);
+        if (!cancelled && mounted.current) setLog(view);
+      } catch {
+        // Keep showing the last good output; the next tick retries.
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void refreshLog();
+    const timer = setInterval(() => { void refreshLog(); }, LOG_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [logOpen, readLog, selectedPath]);
 
   const widths = useMemo(
     () => fitColumns(columnWidths(rows), Math.max(1, width), GAP),
@@ -269,7 +312,16 @@ export function App({ load, openInEditor, devAction }: AppProps): React.ReactEle
   const shownWarnings = warnings.slice(0, MAX_WARNINGS);
   const hiddenWarnings = warnings.length - shownWarnings.length;
   const footerLines = 1 /* margin */ + shownWarnings.length + (hiddenWarnings > 0 ? 1 : 0) + 2;
-  const viewport = Math.max(1, height - 1 /* header */ - footerLines);
+  // The pane takes at most half of what is left, and never the table's last
+  // row. When even its minimum will not fit beside one table row it is hidden
+  // rather than allowed to push the frame past the terminal.
+  const available = Math.max(1, height - 1 /* header */ - footerLines);
+  const room = available - 1;
+  const logFits = logOpen && room >= LOG_MIN_HEIGHT;
+  const logHeight = logFits
+    ? Math.min(room, LOG_MAX_HEIGHT, Math.max(LOG_MIN_HEIGHT, Math.floor(available / 2)))
+    : 0;
+  const viewport = Math.max(1, available - logHeight);
   const start = Math.min(Math.max(0, index - Math.floor(viewport / 2)), Math.max(0, rows.length - viewport));
   const windowed = rows.slice(start, start + viewport);
 
@@ -294,6 +346,16 @@ export function App({ load, openInEditor, devAction }: AppProps): React.ReactEle
           <RowLine key={row.key} row={row} widths={widths} selected={row.key === selected} />
         ))
       )}
+      {logFits ? (
+        <LogPane
+          // Output from the previous selection must not appear under the new
+          // heading while the new read is still in flight.
+          view={log !== null && log.path === selectedPath ? log : null}
+          width={width}
+          height={logHeight}
+          path={selectedPath}
+        />
+      ) : null}
       <Footer
         width={width}
         total={selectable.length}
@@ -306,7 +368,40 @@ export function App({ load, openInEditor, devAction }: AppProps): React.ReactEle
         status={status}
         warnings={shownWarnings}
         hiddenWarnings={hiddenWarnings}
+        logHidden={logOpen && !logFits}
       />
+    </Box>
+  );
+}
+
+interface LogPaneProps {
+  view: LogView | null;
+  width: number;
+  height: number;
+  path: string | null;
+}
+
+function LogPane({ view, width, height, path }: LogPaneProps): React.ReactElement {
+  // `height` covers the whole pane: its top margin, the heading, then output.
+  const bodyHeight = Math.max(1, height - 2);
+  const heading = truncate(
+    `\u2500\u2500 logs: ${path === null ? 'nothing selected' : sanitizeLabel(basename(path))}`,
+    width,
+  );
+
+  const body =
+    view === null ? ['reading\u2026']
+      : view.lines.length > 0 ? view.lines.slice(-bodyHeight)
+        : [view.reason ?? 'no output'];
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text bold color="cyan">{heading}</Text>
+      {body.map((line, index) => (
+        <Text key={`${index}-${line}`} dimColor={view === null || view.lines.length === 0}>
+          {truncate(sanitizeLabel(line), width)}
+        </Text>
+      ))}
     </Box>
   );
 }
@@ -377,9 +472,17 @@ function RowLine({
 /** More warnings than this are summarised, to bound the footer's height. */
 const MAX_WARNINGS = 3;
 
+/** Lines requested from tmux, and how often the open pane re-reads them. */
+const LOG_LIMIT = 200;
+const LOG_INTERVAL_MS = 1000;
+/** Rows the log pane may take, including its heading. */
+const LOG_MIN_HEIGHT = 4;
+const LOG_MAX_HEIGHT = 16;
+
 const HINTS = [
   '[j/k] move', '[enter] worktrees', '[d] dev', '[s] stop', '[x] restart',
-  '[a] attach', '[/] search', '[D] dirty', '[o] editor', '[r] reload', '[q] quit',
+  '[l] logs', '[a] attach', '[/] search', '[D] dirty', '[o] editor',
+  '[r] reload', '[q] quit',
 ];
 
 /** Drops hints from the end until the line fits, so it never wraps. */
@@ -402,14 +505,18 @@ interface FooterProps {
   status: string | null;
   warnings: string[];
   hiddenWarnings: number;
+  /** The pane is toggled on but the terminal is too short to show it. */
+  logHidden: boolean;
 }
 
 function Footer(props: FooterProps): React.ReactElement {
   const {
     width, total, position, groups, loading, filter, query, searching, status, warnings, hiddenWarnings,
+    logHidden,
   } = props;
   const bits = [`${position}/${total}`, `${groups} repos`];
   if (filter === 'dirty') bits.push('dirty only');
+  if (logHidden) bits.push('logs hidden: terminal too short');
   if (loading) bits.push('reading…');
 
   return (
@@ -427,7 +534,9 @@ function Footer(props: FooterProps): React.ReactElement {
       ) : (
         <Text dimColor>{fitHints(HINTS, width)}</Text>
       )}
-      <Text dimColor>{bits.join('  ·  ')}{query !== '' && !searching ? `  ·  filter "${query}"` : ''}</Text>
+      <Text dimColor>
+        {truncate(`${bits.join('  ·  ')}${query !== '' && !searching ? `  ·  filter "${query}"` : ''}`, width)}
+      </Text>
     </Box>
   );
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isTerminalEditor, parseRootsAdd, splitCommand } from './args.js';
+import { isTerminalEditor, parseCount, parseLogsArgs, parseRootsAdd, splitCommand } from './args.js';
 
 test('option value is not mistaken for the path', () => {
   // Regression: `--depth 2 ~/src` used to add a root literally named "2".
@@ -76,4 +76,30 @@ test('a Windows editor path is recognised', () => {
   }
   const [code] = splitCommand('"C:\\\\Program Files\\\\Microsoft VS Code\\\\code.exe"');
   assert.equal(isTerminalEditor(code as string, []), false);
+});
+
+test('--lines rejects malformed values instead of defaulting', () => {
+  // Regression: parseInt read "2junk" as 2 and "1e3" as 1, and anything else
+  // invalid silently became 200, so a scripted typo still exited 0.
+  for (const bad of ['2junk', '1e3', 'abc', '0', '-5', '2.5', '']) {
+    assert.equal(parseLogsArgs(['--lines', bad]).ok, false, `--lines ${JSON.stringify(bad)}`);
+    assert.equal(parseLogsArgs([`--lines=${bad}`]).ok, false, `--lines=${JSON.stringify(bad)}`);
+  }
+  assert.equal(parseLogsArgs(['--lines']).ok, false, 'a missing value is an error');
+});
+
+test('--lines accepts a positive integer in either form, and defaults when absent', () => {
+  assert.deepEqual(parseLogsArgs(['--lines', '30']), { ok: true, value: { lines: 30 } });
+  assert.deepEqual(parseLogsArgs(['--lines=5']), { ok: true, value: { lines: 5 } });
+  assert.deepEqual(parseLogsArgs([' ', 'x']), { ok: true, value: { lines: 200 } });
+  assert.deepEqual(parseLogsArgs([]), { ok: true, value: { lines: 200 } });
+});
+
+test('parseCount enforces the minimum and names the option', () => {
+  assert.deepEqual(parseCount('0', '--depth', 0), { ok: true, value: 0 });
+  const zero = parseCount('0', '--lines', 1);
+  assert.equal(zero.ok, false);
+  assert.match(zero.ok ? '' : zero.error, /--lines must be at least 1/);
+  const junk = parseCount('7x', '--lines', 1);
+  assert.match(junk.ok ? '' : junk.error, /--lines expects a positive integer/);
 });

@@ -1,5 +1,45 @@
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
+/**
+ * Reads a whole-number option value strictly, rejecting rather than repairing.
+ *
+ * `parseInt` accepts "2.5", "2junk" and "1e3" as 2, 2 and 1, and a lenient
+ * fallback turns "abc" into a default, so a typo in a script would succeed
+ * while quietly doing something other than what was asked.
+ */
+export function parseCount(raw: string | undefined, option: string, min: number): ParseResult<number> {
+  const text = raw?.trim() ?? '';
+  if (text === '') return { ok: false, error: `${option} requires a number` };
+  if (!/^\d+$/.test(text)) {
+    const kind = min > 0 ? 'a positive' : 'a non-negative';
+    return { ok: false, error: `${option} expects ${kind} integer, got "${raw as string}"` };
+  }
+  const value = Number.parseInt(text, 10);
+  if (value < min) return { ok: false, error: `${option} must be at least ${min}, got "${raw as string}"` };
+  return { ok: true, value };
+}
+
+export interface LogsArgs {
+  lines: number;
+}
+
+/**
+ * Parses `dev logs` options. `--lines N` and `--lines=N` are accepted; an
+ * absent option uses `fallback`, while a malformed one is an error.
+ */
+export function parseLogsArgs(args: readonly string[], fallback = 200): ParseResult<LogsArgs> {
+  let lines = fallback;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string;
+    if (arg !== '--lines' && !arg.startsWith('--lines=')) continue;
+    const raw = arg.startsWith('--lines=') ? arg.slice('--lines='.length) : args[++i];
+    const parsed = parseCount(raw, '--lines', 1);
+    if (!parsed.ok) return parsed;
+    lines = parsed.value;
+  }
+  return { ok: true, value: { lines } };
+}
+
 export interface RootsAddArgs {
   path: string;
   maxDepth?: number;
@@ -19,13 +59,9 @@ export function parseRootsAdd(args: readonly string[]): ParseResult<RootsAddArgs
 
     if (arg === '--depth' || arg.startsWith('--depth=')) {
       const raw = arg.startsWith('--depth=') ? arg.slice('--depth='.length) : args[++i];
-      if (raw === undefined || raw === '') return { ok: false, error: '--depth requires a number' };
-      // parseInt would accept "2.5", "2junk" and "1e3" as 2, 2 and 1, silently
-      // storing a depth the user never asked for.
-      if (!/^\d+$/.test(raw.trim())) {
-        return { ok: false, error: `--depth expects a non-negative integer, got "${raw}"` };
-      }
-      maxDepth = Number.parseInt(raw.trim(), 10);
+      const parsed = parseCount(raw, '--depth', 0);
+      if (!parsed.ok) return parsed;
+      maxDepth = parsed.value;
       continue;
     }
 

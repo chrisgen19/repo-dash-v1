@@ -15,10 +15,11 @@ import { launchEditor } from './ui/editor.js';
 import { attachDev, readDevStates, restartDev, startDev, stopAllDev, stopDev } from './proc/dev.js';
 import { listSessions, tmuxAvailable } from './proc/tmux.js';
 import { portsByPane } from './proc/ports.js';
+import { readLog } from './proc/logs.js';
 import { canonicalPath } from './util/fs.js';
 import type { LoadResult, DevAction } from './ui/app.js';
 import type { Suspend } from './ui/editor.js';
-import { parseRootsAdd, splitCommand } from './util/args.js';
+import { parseLogsArgs, parseRootsAdd, splitCommand } from './util/args.js';
 
 // Piping into a pager or `head` closes stdout early. Without this, the
 // resulting EPIPE surfaces as an unhandled error and a stack trace.
@@ -35,6 +36,8 @@ Usage
   repo-dash dev                  List dev servers this tool is running
   repo-dash dev start <repo>     Start a dev server
   repo-dash dev stop <repo>      Stop one
+  repo-dash dev restart <repo>   Restart one
+  repo-dash dev logs <repo>      Print recent output from its session
   repo-dash dev stop-all         Stop every session this tool started
   repo-dash list [--json]        List discovered repositories
   repo-dash roots                Show configured scan roots
@@ -209,7 +212,7 @@ async function cmdDashboard(refresh: boolean): Promise<number> {
   const openInEditor = (path: string, suspend: Suspend): Promise<void> =>
     launchEditor(cfg.editor, path, suspend);
 
-  const instance = render(createElement(App, { load, openInEditor, devAction }));
+  const instance = render(createElement(App, { load, openInEditor, devAction, readLog }));
   await instance.waitUntilExit();
   return 0;
 }
@@ -337,6 +340,33 @@ async function cmdDev(rest: string[], refresh: boolean): Promise<number> {
   if (sub === 'stop-all') {
     const stopped = await stopAllDev();
     process.stdout.write(`Stopped ${plural(stopped, 'dev server')}.\n`);
+    return 0;
+  }
+
+  if (sub === 'logs') {
+    if (target === undefined) {
+      process.stderr.write('Usage: repo-dash dev logs <repo> [--lines N]\n');
+      return 1;
+    }
+    // Options are checked before the repository is resolved, so a typo in
+    // one is reported as such rather than hidden behind a lookup error.
+    const options = parseLogsArgs(rest.slice(2));
+    if (!options.ok) {
+      process.stderr.write(`${options.error}\nUsage: repo-dash dev logs <repo> [--lines N]\n`);
+      return 1;
+    }
+    const found = await findRepoPath(cfg, target, refresh);
+    if (typeof found !== 'string') {
+      process.stderr.write(`${found.error}\n`);
+      return 1;
+    }
+
+    const view = await readLog(found, options.value.lines);
+    if (view.lines.length === 0) {
+      process.stderr.write(`${view.reason ?? 'no output'}\n`);
+      return view.running ? 0 : 1;
+    }
+    process.stdout.write(`${view.lines.join('\n')}\n`);
     return 0;
   }
 
