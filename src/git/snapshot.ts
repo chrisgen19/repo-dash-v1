@@ -7,6 +7,7 @@ import type { OverrideIndex } from '../util/overrides.js';
 import { classifyRepoPath } from './discover.js';
 import type { DiscoveredRepo, RepoKind } from './discover.js';
 import { runGit, setGitConcurrency } from './exec.js';
+import { readFetchedAt } from './fetch.js';
 import { readLastCommit } from './log.js';
 import type { LastCommit } from './log.js';
 import { readStatus } from './status.js';
@@ -42,6 +43,8 @@ export interface RepoGroup {
   discovered: boolean;
   status: GitStatus | null;
   lastCommit: LastCommit | null;
+  /** Unix seconds of the last fetch, null if never. Absent when not read. */
+  fetchedAt?: number | null;
   /** Linked worktrees only; the main worktree is this group. */
   worktrees: WorktreeView[];
 }
@@ -165,6 +168,7 @@ async function buildGroup(
     name: basename(mainPath),
     path: mainPath,
     commonDir,
+    fetchedAt: await readFetchedAt(commonDir),
     // The anchor may be a linked worktree, so its kind must not stand in for
     // the main checkout's. Read the reported main path instead.
     kind: main?.bare === true && mainProbe === undefined

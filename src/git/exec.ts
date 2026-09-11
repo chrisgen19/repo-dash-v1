@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { Semaphore } from '../util/semaphore.js';
-import { run } from '../util/run.js';
+import { run, runDetached } from '../util/run.js';
 import type { RunResult } from '../util/run.js';
 
 export type GitResult = RunResult;
@@ -88,4 +88,27 @@ export async function runGit(
   // slow bootstrap occupy every permit and stall all git reads.
   const env = await childEnv();
   return gitLimiter.run(() => run('git', args, { cwd, timeoutMs, env, maxBuffer: MAX_BUFFER }));
+}
+
+/**
+ * The environment for a git command that may contact a remote: the usual
+ * repository isolation, plus GIT_TERMINAL_PROMPT=0 so an https remote that
+ * wants credentials fails instead of waiting for input that cannot arrive.
+ * Credential helpers, such as `gh auth git-credential`, still run.
+ */
+export async function remoteEnv(): Promise<NodeJS.ProcessEnv> {
+  return { ...(await childEnv()), GIT_TERMINAL_PROMPT: '0' };
+}
+
+/**
+ * Runs a git command that may contact a remote. It is detached from the
+ * terminal, so nothing can prompt, and shares the limit on concurrent git.
+ */
+export async function runGitRemote(
+  cwd: string,
+  args: readonly string[],
+  timeoutMs: number,
+): Promise<GitResult> {
+  const env = await remoteEnv();
+  return gitLimiter.run(() => runDetached('git', args, { cwd, timeoutMs, env, maxBuffer: MAX_BUFFER }));
 }

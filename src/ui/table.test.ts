@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { formatFetched, isStaleFetch } from './format.js';
 import { formatAheadBehind, formatBranch, formatDirty, renderTable, sanitizeLabel } from './table.js';
 import { fitColumns, buildRows, pruneHeadings, isSelectable } from './rows.js';
 import { cellWidth, padCells, truncate } from './format.js';
@@ -202,4 +203,47 @@ test('a heading is truncated when a width is given', () => {
   for (const line of renderTable([group], { expand: false, width: 30 }).split('\n')) {
     assert.ok(cellWidth(line) <= 30, `${cellWidth(line)} cells -> ${line}`);
   }
+});
+
+test('fetch age reads in the largest sensible unit', () => {
+  const now = 1_000_000_000_000;
+  const s = now / 1000;
+  assert.equal(formatFetched(s - 10, true, now), 'just now');
+  assert.equal(formatFetched(s - 5 * 60, true, now), '5m ago');
+  assert.equal(formatFetched(s - 3 * 3600, true, now), '3h ago');
+  assert.equal(formatFetched(s - 2 * 86_400, true, now), '2d ago');
+  assert.equal(formatFetched(null, true, now), 'never');
+  assert.equal(formatFetched(undefined, true, now), 'never');
+  assert.equal(formatFetched(s - 10, false, now), '-', 'no upstream, so no fetch changes anything');
+  assert.equal(formatFetched(s + 100, true, now), 'just now', 'a future timestamp is not a negative age');
+});
+
+test('a day without fetching counts as stale', () => {
+  assert.equal(isStaleFetch('never'), true);
+  assert.equal(isStaleFetch('2d ago'), true);
+  assert.equal(isStaleFetch('23h ago'), false);
+  assert.equal(isStaleFetch('just now'), false);
+  assert.equal(isStaleFetch('-'), false);
+});
+
+test('the FETCHED column is filled for repositories, not their worktrees', () => {
+  const group: RepoGroup = {
+    ...groupFixture('app'),
+    worktrees: [{
+      path: '/r/wt', name: 'wt', branch: 'b', detached: false,
+      locked: false, prunable: false, status: status({}), lastCommit: null,
+    }],
+  };
+  const [header, main, child] = renderTable([group], { expand: true }).split('\n');
+  assert.match(header ?? '', /FETCHED$/);
+  assert.match(main ?? '', /never$/, 'an upstream with no fetch on record');
+  assert.doesNotMatch(child ?? '', /never/, "a worktree shares its repository's fetch");
+});
+
+test('a wide-character name keeps its full width when there is room', () => {
+  // Regression: natural widths were measured in code units, so a CJK name was
+  // given a column half its size and cut even with no width limit.
+  const name = String.fromCodePoint(0x65e5, 0x672c, 0x8a9e, 0x30ea, 0x30dd);
+  const rendered = renderTable([groupFixture(name)], { expand: false });
+  assert.ok(rendered.includes(name), rendered);
 });
