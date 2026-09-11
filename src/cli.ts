@@ -38,6 +38,9 @@ Options
   -h, --help    Show this help
 `;
 
+/** Options accepted before a command; everything else belongs to the subcommand. */
+const GLOBAL_FLAGS = new Set(['--refresh', '--json', '--expand', '-h', '--help']);
+
 async function main(argv: string[]): Promise<number> {
   if (argv.includes('-h') || argv.includes('--help')) {
     process.stdout.write(HELP);
@@ -45,11 +48,23 @@ async function main(argv: string[]): Promise<number> {
   }
 
   // Options may precede the command, so `repo-dash --refresh` still selects the
-  // default dashboard instead of being read as an unknown command.
-  const flags = argv.filter((a) => a.startsWith('-'));
-  const positional = argv.filter((a) => !a.startsWith('-'));
-  const refresh = flags.includes('--refresh');
-  const [command, ...rest] = positional;
+  // default dashboard. Only leading options are consumed here: everything from
+  // the command onwards belongs to that subcommand, so `roots add <path>
+  // --depth 2` keeps both halves of its own option.
+  let cursor = 0;
+  while (cursor < argv.length && (argv[cursor] as string).startsWith('-')) {
+    const flag = (argv[cursor] as string).split('=')[0] as string;
+    if (!GLOBAL_FLAGS.has(flag)) {
+      process.stderr.write(`Unknown option: ${argv[cursor] as string}\n\n${HELP}`);
+      return 1;
+    }
+    cursor++;
+  }
+  const leading = argv.slice(0, cursor);
+  const [command, ...rest] = argv.slice(cursor);
+
+  const hasFlag = (name: string): boolean => leading.includes(name) || rest.includes(name);
+  const refresh = hasFlag('--refresh');
 
   switch (command) {
     case undefined:
@@ -58,9 +73,9 @@ async function main(argv: string[]): Promise<number> {
         ? cmdDashboard(refresh)
         : cmdStatus(refresh, true, false);
     case 'list':
-      return cmdList(rest, refresh, flags.includes('--json'));
+      return cmdList(rest, refresh, hasFlag('--json'));
     case 'status':
-      return cmdStatus(refresh, flags.includes('--expand'), flags.includes('--json'));
+      return cmdStatus(refresh, hasFlag('--expand'), hasFlag('--json'));
     case 'roots':
       return cmdRoots(rest);
     case 'config':
@@ -191,10 +206,17 @@ async function cmdDashboard(refresh: boolean): Promise<number> {
       await runAttached(exe, full);
       return;
     }
-    // A GUI editor detaches, so closing the dashboard does not close it.
-    const child = spawn(exe, full, { stdio: 'ignore', detached: true });
-    child.on('error', () => undefined);
-    child.unref();
+    // A windowed editor detaches, so closing the dashboard does not close it.
+    // The launch is still awaited far enough to report a missing executable
+    // rather than claiming success.
+    await new Promise<void>((resolveSpawn, rejectSpawn) => {
+      const child = spawn(exe, full, { stdio: 'ignore', detached: true });
+      child.once('error', rejectSpawn);
+      child.once('spawn', () => {
+        child.unref();
+        resolveSpawn();
+      });
+    });
   };
 
   instance = render(createElement(App, { load, openInEditor }));

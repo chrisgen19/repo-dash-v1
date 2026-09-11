@@ -38,7 +38,7 @@ repo-dash config path                    # print the config location
 
 | Key | Type | Purpose |
 |---|---|---|
-| `roots[]` | `{path, maxDepth?, enabled?, label?}` | Trees to scan. `~`, `$VAR` and `${VAR}` are expanded. A bare string is shorthand for `{ "path": ... }`. Omitting the key re-seeds the defaults; an explicit `[]` means scan nothing. |
+| `roots[]` | `{path, maxDepth?, enabled?, label?}` | Trees to scan. `~`, `$VAR` and `${VAR}` are expanded. A bare string is shorthand for `{ "path": ... }`. Omitting the key re-seeds the defaults; an explicit `[]` means scan nothing. A `label` groups that root's repositories under a heading. |
 | `ignore` | `string[]` | Skip patterns matched on the absolute path. `*` within a segment, `**` across segments. A bare word like `"docs"` matches any segment of that name. |
 | `pruneDirs` | `string[]` | Directory names never descended into, at any depth. |
 | `maxDepth` | `number` | Default descent depth, overridable per root. |
@@ -142,6 +142,19 @@ reload.
 
 Searching looks inside collapsed repositories and matches a worktree on its own
 name, branch and path, revealing matches without expanding first.
+
+Giving a root a `label` groups its repositories under a heading, which is useful
+for separating, say, personal work from client work:
+
+```json
+"roots": [
+  { "path": "~/projects", "label": "personal" },
+  { "path": "~/ag-projects", "label": "work" }
+]
+```
+
+Headings are labels rather than entries, so the cursor skips them and the
+position counter reports only real repositories.
 
 `o` hands the terminal to a terminal editor such as Vim, Nano or Helix and
 takes it back when the editor exits. A windowed editor such as VS Code is

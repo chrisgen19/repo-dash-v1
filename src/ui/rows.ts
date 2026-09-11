@@ -4,7 +4,7 @@ import { formatAheadBehind, formatBranch, formatDirty, sanitizeLabel } from './f
 export const COLUMNS = ['REPO', 'BRANCH', 'AHEAD/BEHIND', 'DIRTY', 'WT', 'LAST COMMIT'] as const;
 
 export interface Row {
-  kind: 'group' | 'worktree';
+  kind: 'group' | 'worktree' | 'heading';
   /** Unique and stable across reloads, so a selection survives a refresh. */
   key: string;
   indent: number;
@@ -57,13 +57,57 @@ function worktreeRow(group: RepoGroup, wt: WorktreeView): Row {
   };
 }
 
-/** Flattens groups into display rows, expanding those `isExpanded` accepts. */
+function headingRow(group: RepoGroup, label: string): Row {
+  return {
+    kind: 'heading',
+    key: `heading:${label}`,
+    indent: 0,
+    cells: [sanitizeLabel(label), '', '', '', '', ''],
+    group,
+    worktree: undefined,
+  };
+}
+
+/** True for rows a cursor may land on; headings are labels, not entries. */
+export function isSelectable(row: Row): boolean {
+  return row.kind !== 'heading';
+}
+
+/** Drops headings left with no rows beneath them, as filtering can do. */
+export function pruneHeadings(rows: readonly Row[]): Row[] {
+  return rows.filter((row, i) => {
+    if (row.kind !== 'heading') return true;
+    const next = rows[i + 1];
+    return next !== undefined && next.kind !== 'heading';
+  });
+}
+
+/**
+ * Flattens groups into display rows, expanding those `isExpanded` accepts.
+ * When any root carries a label, repositories are grouped under it, which is
+ * what `RootConfig.label` promises.
+ */
 export function buildRows(
   groups: readonly RepoGroup[],
   isExpanded: (group: RepoGroup) => boolean,
 ): Row[] {
+  const labelled = groups.some((g) => g.rootLabel !== undefined);
+  const ordered = labelled
+    ? [...groups].sort(
+        (a, b) =>
+          (a.rootLabel ?? '\uffff').localeCompare(b.rootLabel ?? '\uffff') ||
+          a.path.localeCompare(b.path),
+      )
+    : groups;
+
   const rows: Row[] = [];
-  for (const group of groups) {
+  let section: string | undefined | null = null;
+
+  for (const group of ordered) {
+    if (labelled && group.rootLabel !== section) {
+      section = group.rootLabel;
+      rows.push(headingRow(group, section ?? 'other'));
+    }
     rows.push(groupRow(group));
     if (!isExpanded(group)) continue;
     for (const wt of group.worktrees) rows.push(worktreeRow(group, wt));

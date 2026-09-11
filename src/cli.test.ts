@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -113,4 +113,38 @@ test('an inherited GIT_DIR does not collapse unrelated repositories', async () =
   });
   const names = (JSON.parse(stdout) as { groups: Array<{ name: string }> }).groups.map((g) => g.name);
   assert.deepEqual(names.sort(), ['alpha', 'beta']);
+});
+
+test('subcommand options survive global flag extraction', async () => {
+  // Regression: stripping every leading dash-token removed --depth but left
+  // its value behind, and --depth=N vanished entirely, silently saving the
+  // default depth.
+  const home = await mkdtemp(join(tmpdir(), 'repo-dash-flags-'));
+  await mkdir(join(home, 'repo-dash'), { recursive: true });
+  await writeFile(join(home, 'repo-dash', 'config.json'), '{"roots":[]}', 'utf8');
+
+  assert.equal((await run(['roots', 'add', '/tmp/a-one', '--depth', '2'], home)).code, 0);
+  assert.equal((await run(['roots', 'add', '/tmp/a-two', '--depth=3'], home)).code, 0);
+  assert.equal((await run(['roots', 'add', '--depth', '5', '/tmp/a-three'], home)).code, 0);
+
+  const cfg = JSON.parse(await readFile(join(home, 'repo-dash', 'config.json'), 'utf8')) as {
+    roots: Array<{ path: string; maxDepth?: number }>;
+  };
+  assert.deepEqual(
+    cfg.roots.map((r) => [r.path, r.maxDepth]),
+    [['/tmp/a-one', 2], ['/tmp/a-two', 3], ['/tmp/a-three', 5]],
+  );
+});
+
+test('a global flag may precede the command', async () => {
+  const home = await emptyConfigHome();
+  const { stdout, code } = await run(['--refresh', 'status', '--json'], home);
+  assert.equal(code, 0);
+  assert.deepEqual((JSON.parse(stdout) as { groups: unknown[] }).groups, []);
+});
+
+test('an unknown option is reported rather than treated as a command', async () => {
+  const home = await emptyConfigHome();
+  const { code } = await run(['--bogus'], home);
+  assert.equal(code, 1);
 });

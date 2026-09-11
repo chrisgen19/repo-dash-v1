@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import type { RepoGroup } from '../git/snapshot.js';
-import { truncate } from './format.js';
-import { COLUMNS, buildRows, columnWidths, fitColumns } from './rows.js';
+import { sanitizeLabel, truncate } from './format.js';
+import { COLUMNS, buildRows, columnWidths, fitColumns, isSelectable, pruneHeadings } from './rows.js';
 import type { Row } from './rows.js';
 
 const GAP = 2;
@@ -91,7 +91,7 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
   );
 
   const rows = useMemo(() => {
-    if (query === '') return buildRows(visible, (g) => expanded.has(g.path));
+    if (query === '') return pruneHeadings(buildRows(visible, (g) => expanded.has(g.path)));
 
     // Search looks inside collapsed repositories too, so a worktree-only name
     // is findable without expanding first; matches are revealed automatically.
@@ -103,30 +103,53 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
       // Keep a worktree's parent so an indented match is not orphaned.
       if (row.kind === 'worktree') keep.add(row.group.path);
     }
-    return all.filter((r) => keep.has(r.key));
+    return pruneHeadings(all.filter((r) => r.kind === 'heading' || keep.has(r.key)));
   }, [visible, expanded, query]);
 
   const index = Math.max(0, rows.findIndex((r) => r.key === selected));
   const current = rows[index];
 
-  // Keep a selection alive as rows appear and disappear.
+  /** The nearest selectable row at or after `from`, searching in `step`. */
+  const seek = useCallback(
+    (from: number, step: number): number => {
+      for (let i = from; i >= 0 && i < rows.length; i += step) {
+        if (isSelectable(rows[i] as Row)) return i;
+      }
+      // Nothing that way: fall back to the nearest selectable in the other one.
+      for (let i = from; i >= 0 && i < rows.length; i -= step) {
+        if (isSelectable(rows[i] as Row)) return i;
+      }
+      return -1;
+    },
+    [rows],
+  );
+
+  // Keep a selection alive as rows appear and disappear, and off headings.
   useEffect(() => {
     if (rows.length === 0) return;
-    if (selected !== null && rows.some((r) => r.key === selected)) return;
-    setSelected(rows[Math.min(index, rows.length - 1)]?.key ?? null);
-  }, [rows, selected, index]);
+    const currentRow = rows.find((r) => r.key === selected);
+    if (currentRow !== undefined && isSelectable(currentRow)) return;
+    const target = seek(Math.min(index, rows.length - 1), 1);
+    setSelected(target === -1 ? null : rows[target]?.key ?? null);
+  }, [rows, selected, index, seek]);
 
   const move = useCallback(
     (delta: number): void => {
       if (rows.length === 0) return;
-      const next = Math.min(rows.length - 1, Math.max(0, index + delta));
-      setSelected(rows[next]?.key ?? null);
+      const step = delta > 0 ? 1 : -1;
+      let position = index;
+      for (let remaining = Math.abs(delta); remaining > 0; remaining--) {
+        const next = seek(position + step, step);
+        if (next === -1 || next === position) break;
+        position = next;
+      }
+      setSelected(rows[position]?.key ?? null);
     },
-    [rows, index],
+    [rows, index, seek],
   );
 
   const toggle = useCallback((): void => {
-    if (current === undefined) return;
+    if (current === undefined || current.kind === 'heading') return;
     const path = current.group.path;
     if (current.group.worktrees.length === 0) {
       setStatus('no linked worktrees');
@@ -155,8 +178,8 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
     if (key.upArrow || input === 'k') { move(-1); return; }
     if (key.pageDown) { move(10); return; }
     if (key.pageUp) { move(-10); return; }
-    if (input === 'g') { setSelected(rows[0]?.key ?? null); return; }
-    if (input === 'G') { setSelected(rows[rows.length - 1]?.key ?? null); return; }
+    if (input === 'g') { const t = seek(0, 1); if (t !== -1) setSelected(rows[t]?.key ?? null); return; }
+    if (input === 'G') { const t = seek(rows.length - 1, -1); if (t !== -1) setSelected(rows[t]?.key ?? null); return; }
     if (key.return || input === ' ') { toggle(); return; }
     if (input === 'E') { setExpanded(new Set(visible.filter((g) => g.worktrees.length > 0).map((g) => g.path))); return; }
     if (input === 'C') { setExpanded(new Set()); return; }
@@ -165,11 +188,14 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
     if (input === 'r') { void reload(false); return; }
     if (input === 'R') { void reload(true); return; }
     if (input === 'o') {
-      const path = current?.worktree?.path ?? current?.group.path;
-      if (path === undefined) return;
-      setStatus(`opening ${path}`);
+      if (current === undefined || current.kind === 'heading') return;
+      const path = current.worktree?.path ?? current.group.path;
+      // The path reaches the editor unchanged, but a path may contain a
+      // newline or an escape, so the copy shown here is escaped like a label.
+      const shown = sanitizeLabel(path);
+      setStatus(`opening ${shown}`);
       void Promise.resolve(openInEditor(path))
-        .then(() => { if (mounted.current) setStatus(`opened ${path}`); })
+        .then(() => { if (mounted.current) setStatus(`opened ${shown}`); })
         .catch((err: unknown) => {
           if (mounted.current) setStatus(`could not open: ${err instanceof Error ? err.message : String(err)}`);
         });
@@ -177,9 +203,15 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
   });
 
   const widths = useMemo(
-    () => fitColumns(columnWidths(rows), Math.max(40, width), GAP),
+    () => fitColumns(columnWidths(rows), Math.max(1, width), GAP),
     [rows, width],
   );
+
+  // Headings are labels, so the counter reports position among real entries.
+  const selectable = rows.filter(isSelectable);
+  const position = current === undefined
+    ? 0
+    : selectable.findIndex((r) => r.key === current.key) + 1;
 
   // Two lines of chrome above, three below.
   const viewport = Math.max(3, height - 6);
@@ -209,8 +241,8 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
       )}
       <Footer
         width={width}
-        total={rows.length}
-        position={rows.length === 0 ? 0 : index + 1}
+        total={selectable.length}
+        position={position}
         groups={visible.length}
         loading={loading}
         filter={filter}
@@ -221,6 +253,11 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
       />
     </Box>
   );
+}
+
+function totalWidth(widths: readonly number[]): number {
+  const shown = widths.filter((w) => w > 0);
+  return shown.reduce((a, b) => a + b, 0) + GAP * Math.max(0, shown.length - 1);
 }
 
 /** Indices of the columns wide enough to show, in display order. */
@@ -249,6 +286,14 @@ const COLUMN_COLOR: Record<number, string | undefined> = {
 function RowLine({
   row, widths, selected,
 }: { row: Row; widths: number[]; selected: boolean }): React.ReactElement {
+  if (row.kind === 'heading') {
+    return (
+      <Box>
+        <Text bold color="magenta">{truncate(row.cells[0] ?? '', totalWidth(widths))}</Text>
+      </Box>
+    );
+  }
+
   const shown = shownColumns(widths);
   const dirtyCell = row.cells[3] ?? '\u00b7';
   const dirty = dirtyCell !== '\u00b7' && dirtyCell !== '?' && dirtyCell !== '';

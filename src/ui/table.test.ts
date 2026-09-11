@@ -1,9 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { formatAheadBehind, formatBranch, formatDirty, renderTable, sanitizeLabel } from './table.js';
-import { fitColumns } from './rows.js';
+import { fitColumns, buildRows, pruneHeadings, isSelectable } from './rows.js';
 import type { GitStatus } from '../git/status.js';
 import type { RepoGroup } from '../git/snapshot.js';
+
+function groupFixture(name: string): RepoGroup {
+  return {
+    name, path: `/r/${name}`, commonDir: `/r/${name}/.git`, kind: 'normal',
+    rootLabel: undefined, discovered: true, status: status({}), lastCommit: null, worktrees: [],
+  };
+}
 
 function status(overrides: Partial<GitStatus>): GitStatus {
   return {
@@ -114,4 +121,28 @@ test('a narrow table renders without wrapping', () => {
       assert.ok(line.length <= width, `width ${width}: line of ${line.length} -> ${line}`);
     }
   }
+});
+
+test('labelled roots become headings, unlabelled ones do not', () => {
+  const personal = { ...groupFixture('alpha'), rootLabel: 'personal' };
+  const work = { ...groupFixture('beta'), rootLabel: 'work' };
+  const rows = buildRows([work, personal], () => false);
+  assert.deepEqual(
+    rows.map((r) => [r.kind, r.cells[0]]),
+    [['heading', 'personal'], ['group', 'alpha'], ['heading', 'work'], ['group', 'beta']],
+    'sections are ordered by label, with the repositories under them',
+  );
+  assert.equal(isSelectable(rows[0] as (typeof rows)[number]), false, 'a heading is not selectable');
+
+  const plain = buildRows([groupFixture('alpha')], () => false);
+  assert.deepEqual(plain.map((r) => r.kind), ['group']);
+});
+
+test('a heading with nothing under it is dropped', () => {
+  const rows = buildRows(
+    [{ ...groupFixture('alpha'), rootLabel: 'personal' }, { ...groupFixture('beta'), rootLabel: 'work' }],
+    () => false,
+  );
+  const filtered = pruneHeadings(rows.filter((r) => r.cells[0] !== 'beta'));
+  assert.deepEqual(filtered.map((r) => r.cells[0]), ['personal', 'alpha']);
 });

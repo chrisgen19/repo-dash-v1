@@ -1,6 +1,6 @@
 import type { RepoGroup } from '../git/snapshot.js';
 import { truncate } from './format.js';
-import { COLUMNS, buildRows, columnWidths, fitColumns } from './rows.js';
+import { COLUMNS, buildRows, columnWidths, fitColumns, pruneHeadings } from './rows.js';
 
 export { formatAheadBehind, formatBranch, formatDirty, sanitizeLabel } from './format.js';
 
@@ -20,7 +20,7 @@ function pad(value: string, width: number): string {
 
 /** Renders the group list as an aligned plain-text table. */
 export function renderTable(groups: readonly RepoGroup[], options: TableOptions): string {
-  const rows = buildRows(groups, () => options.expand);
+  const rows = pruneHeadings(buildRows(groups, () => options.expand));
   const natural = columnWidths(rows);
   const widths = options.width === undefined ? natural : fitColumns(natural, options.width, GAP);
 
@@ -30,6 +30,11 @@ export function renderTable(groups: readonly RepoGroup[], options: TableOptions)
 
   const lines = [shown.map((i) => cell(COLUMNS[i] as string, i)).join(' '.repeat(GAP)).trimEnd()];
   for (const row of rows) {
+    if (row.kind === 'heading') {
+      // A heading spans the row rather than sitting in the first column.
+      lines.push(truncate(`${row.cells[0] ?? ''}:`, Math.max(1, options.width ?? 200)));
+      continue;
+    }
     const cells = shown.map((i) => {
       const text = i === 0 ? `${'  '.repeat(row.indent)}${row.cells[i] ?? ''}` : row.cells[i] ?? '';
       return cell(text, i);

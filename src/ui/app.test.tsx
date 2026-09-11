@@ -81,8 +81,10 @@ interface Harness {
 async function mount(
   groups: RepoGroup[],
   onOpen?: (path: string) => Promise<unknown>,
+  columns = 120,
 ): Promise<Harness> {
   const stdout = new FakeStdout();
+  stdout.columns = columns;
   const stdin = fakeStdin();
   const opened: string[] = [];
   const load = async (): Promise<LoadResult> => ({ groups, warnings: [] });
@@ -261,5 +263,59 @@ test('the editor status reflects an async open', async () => {
   });
   await h.press('o');
   await h.until(() => h.frame().includes('opened /r/alpha'), 'the completed open');
+  h.cleanup();
+});
+
+test('rows fit a terminal narrower than the old 40-column floor', async () => {
+  // Regression: the call site clamped the budget to 40, so anything narrower
+  // rendered 40-wide rows that wrapped.
+  for (const columns of [24, 30, 36]) {
+    // A short name so the readiness check is not defeated by truncation.
+    const h = await mount([group('app')], undefined, columns);
+    for (const line of h.frame().split('\n')) {
+      assert.ok(line.length <= columns, `at ${columns} columns: ${line.length} -> ${line}`);
+    }
+    h.cleanup();
+  }
+});
+
+test('a failed editor launch is reported, not announced as success', async () => {
+  // Regression: the spawn error was swallowed and the status still said opened.
+  const h = await mount([group('alpha')], async () => {
+    throw new Error('spawn nonexistent-editor ENOENT');
+  });
+  await h.press('o');
+  await h.until(() => h.frame().includes('could not open'), 'the failure to surface');
+  assert.doesNotMatch(h.frame(), /opened \/r\/alpha/);
+  h.cleanup();
+});
+
+test('a path with control characters is escaped in the status line', async () => {
+  // Regression: the raw path was interpolated, so a newline split the footer.
+  const h = await mount([group('alpha', { path: '/r/two\nlines' })]);
+  await h.press('o');
+  await h.until(() => h.frame().includes('two\\nlines'), 'the escaped path');
+  assert.ok(!h.frame().includes('\u001b['), 'no raw escape reaches the terminal');
+  assert.deepEqual(h.opened, ['/r/two\nlines'], 'the editor still receives the real path');
+  h.cleanup();
+});
+
+test('the cursor skips heading rows', async () => {
+  const h = await mount([
+    group('alpha', { rootLabel: 'personal' }),
+    group('beta', { rootLabel: 'work' }),
+  ]);
+  await h.until(() => h.frame().includes('personal'), 'the headings');
+  assert.match(h.frame(), /work/);
+
+  // Four rows render, but the counter reports only the two selectable ones.
+  await h.until(() => h.frame().includes('1/2'), 'the first repository selected');
+  await h.press('j');
+  await h.until(() => h.frame().includes('2/2'), 'the next repository, skipping the heading');
+  await h.press('j');
+  await tick(40);
+  assert.match(h.frame(), /2\/2/, 'the last repository is the end');
+  await h.press('k');
+  await h.until(() => h.frame().includes('1/2'), 'back to the first repository');
   h.cleanup();
 });
