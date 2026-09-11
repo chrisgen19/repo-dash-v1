@@ -186,3 +186,20 @@ test('a table of wide-character names still fits its width', () => {
     }
   }
 });
+
+test('an unset width leaves a long heading intact', () => {
+  // Regression: headings were capped at 200 characters even with no width set,
+  // losing part of a configured label in piped output.
+  const label = 'L'.repeat(260);
+  const group: RepoGroup = { ...groupFixture('app'), rootLabel: label };
+  const heading = renderTable([group], { expand: false }).split('\n')[1] ?? '';
+  assert.equal(heading, `${label}:`);
+  assert.ok(!heading.includes('\u2026'));
+});
+
+test('a heading is truncated when a width is given', () => {
+  const group: RepoGroup = { ...groupFixture('app'), rootLabel: 'L'.repeat(80) };
+  for (const line of renderTable([group], { expand: false, width: 30 }).split('\n')) {
+    assert.ok(cellWidth(line) <= 30, `${cellWidth(line)} cells -> ${line}`);
+  }
+});

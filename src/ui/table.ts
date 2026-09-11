@@ -27,7 +27,9 @@ export function renderTable(groups: readonly RepoGroup[], options: TableOptions)
   for (const row of rows) {
     if (row.kind === 'heading') {
       // A heading spans the row rather than sitting in the first column.
-      lines.push(truncate(`${row.cells[0] ?? ''}:`, Math.max(1, options.width ?? 200)));
+      // An unset width means unlimited, as it does for every other column.
+      const heading = `${row.cells[0] ?? ''}:`;
+      lines.push(options.width === undefined ? heading : truncate(heading, Math.max(1, options.width)));
       continue;
     }
     const cells = shown.map((i) => {

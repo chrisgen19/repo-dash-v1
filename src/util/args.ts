@@ -95,7 +95,8 @@ const WINDOWED_FLAGS = ['-nw', '--no-window-system', '-v'];
  * unless nothing suggests otherwise, while `gvim` opens a window by default.
  */
 export function isTerminalEditor(command: string, args: readonly string[] = []): boolean {
-  const base = (command.split('/').pop() ?? command).replace(/\.(exe|cmd|bat)$/i, '');
+  // Both separators: a configured Windows path would otherwise never match.
+  const base = (command.split(/[/\\]/).pop() ?? command).replace(/\.(exe|cmd|bat)$/i, '');
   if (base === 'gvim') return args.some((a) => WINDOWED_FLAGS.includes(a));
   return TERMINAL_EDITORS.has(base);
 }

@@ -66,3 +66,14 @@ test('terminal editors are told apart from windowed ones', () => {
   assert.equal(isTerminalEditor('gvim', ['-v']), true);
   assert.equal(isTerminalEditor('gvim', ['-nw']), true);
 });
+
+test('a Windows editor path is recognised', () => {
+  // Regression: splitting on "/" alone left "C:\\...\\vim" unmatched, so a
+  // terminal editor was launched detached and hung with no terminal.
+  for (const cmd of ['"C:\\\\Program Files\\\\Vim\\\\vim.exe"', 'C:\\\\tools\\\\nvim.exe']) {
+    const [exe, ...args] = splitCommand(cmd);
+    assert.equal(isTerminalEditor(exe as string, args), true, cmd);
+  }
+  const [code] = splitCommand('"C:\\\\Program Files\\\\Microsoft VS Code\\\\code.exe"');
+  assert.equal(isTerminalEditor(code as string, []), false);
+});

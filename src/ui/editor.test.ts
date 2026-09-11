@@ -16,16 +16,26 @@ test('an empty editor setting is reported', async () => {
   await assert.rejects(launchEditor('', '/tmp'), /no editor configured/);
 });
 
-test('suspend hooks run around a terminal editor, even when it fails', async () => {
+/** Stands in for Ink's suspendTerminal, recording that it wrapped the run. */
+function recordingSuspend(calls: string[]): (run: () => Promise<void>) => Promise<void> {
+  return async (run) => {
+    calls.push('suspended');
+    try {
+      await run();
+    } finally {
+      calls.push('resumed');
+    }
+  };
+}
+
+test('a terminal editor runs inside the suspension, even when it fails', async () => {
   const calls: string[] = [];
-  const hooks = { before: () => calls.push('before'), after: () => calls.push('after') };
-  await assert.rejects(launchEditor('kak', '/tmp', hooks));
-  assert.deepEqual(calls, ['before', 'after'], 'the terminal must be handed back');
+  await assert.rejects(launchEditor('kak', '/tmp', recordingSuspend(calls)));
+  assert.deepEqual(calls, ['suspended', 'resumed'], 'the terminal must be handed back');
 });
 
 test('a windowed editor does not suspend the dashboard', async () => {
   const calls: string[] = [];
-  const hooks = { before: () => calls.push('before'), after: () => calls.push('after') };
-  await launchEditor('true', '/tmp', hooks).catch(() => undefined);
-  assert.deepEqual(calls, [], 'no need to release the terminal for a detached launch');
+  await launchEditor('true', '/tmp', recordingSuspend(calls)).catch(() => undefined);
+  assert.deepEqual(calls, [], 'a detached launch never takes the terminal');
 });

@@ -4,6 +4,7 @@ import type { RepoGroup } from '../git/snapshot.js';
 import { cellWidth, padCells, sanitizeLabel, truncate } from './format.js';
 import { COLUMNS, buildRows, columnWidths, fitColumns, isSelectable, pruneHeadings } from './rows.js';
 import type { Row } from './rows.js';
+import type { Suspend } from './editor.js';
 
 const GAP = 2;
 
@@ -15,8 +16,11 @@ export interface LoadResult {
 export interface AppProps {
   /** Reads repositories. `refresh` bypasses the discovery cache. */
   load: (refresh: boolean) => Promise<LoadResult>;
-  /** Invoked with a repository path when the open key is pressed. */
-  openInEditor: (path: string) => void | Promise<void>;
+  /**
+   * Invoked with a repository path when the open key is pressed. `suspend`
+   * hands the terminal over for an editor that draws in it.
+   */
+  openInEditor: (path: string, suspend: Suspend) => void | Promise<void>;
 }
 
 type Filter = 'all' | 'dirty';
@@ -50,7 +54,7 @@ function terminalSize(stdout: { columns?: number; rows?: number }): { columns: n
 }
 
 export function App({ load, openInEditor }: AppProps): React.ReactElement {
-  const { exit } = useApp();
+  const { exit, suspendTerminal } = useApp();
   const { stdout } = useStdout();
 
   const [groups, setGroups] = useState<RepoGroup[]>([]);
@@ -209,7 +213,7 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
       // newline or an escape, so the copy shown here is escaped like a label.
       const shown = sanitizeLabel(path);
       setStatus(`opening ${shown}`);
-      void Promise.resolve(openInEditor(path))
+      void Promise.resolve(openInEditor(path, suspendTerminal))
         .then(() => { if (mounted.current) setStatus(`opened ${shown}`); })
         .catch((err: unknown) => {
           if (mounted.current) setStatus(`could not open: ${err instanceof Error ? err.message : String(err)}`);

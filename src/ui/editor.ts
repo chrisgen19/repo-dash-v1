@@ -1,12 +1,12 @@
 import { spawn } from 'node:child_process';
 import { isTerminalEditor, splitCommand } from '../util/args.js';
 
-export interface Suspend {
-  /** Runs before an attached editor is handed the terminal. */
-  before: () => void;
-  /** Runs once it exits, whether or not it started. */
-  after: () => void;
-}
+/**
+ * Hands the terminal to `run` and restores it afterwards. Ink's
+ * `useApp().suspendTerminal` has this shape and owns the full lifecycle:
+ * cursor state, raw mode, and forcing a redraw once the child exits.
+ */
+export type Suspend = (run: () => Promise<void>) => Promise<void>;
 
 /**
  * Runs the configured editor on `path`.
@@ -22,19 +22,18 @@ export async function launchEditor(command: string, path: string, suspend?: Susp
   const argv = [...args, path];
 
   if (isTerminalEditor(exe, args)) {
-    return runAttached(exe, argv, suspend);
+    const run = (): Promise<void> => runAttached(exe, argv);
+    return suspend === undefined ? run() : suspend(run);
   }
   return runDetached(exe, argv);
 }
 
-function runAttached(exe: string, argv: string[], suspend?: Suspend): Promise<void> {
+function runAttached(exe: string, argv: string[]): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    suspend?.before();
     let settled = false;
     const finish = (err?: Error): void => {
-      if (settled) return;
+      if (settled) return; // error and exit can both fire
       settled = true;
-      suspend?.after();
       if (err) reject(err);
       else resolve();
     };

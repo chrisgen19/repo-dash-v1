@@ -9,7 +9,9 @@ import { clearCache, readCache, writeCache } from './cache.js';
 import { buildGroups } from './git/snapshot.js';
 import type { RepoGroup } from './git/snapshot.js';
 import { renderTable } from './ui/table.js';
+import { cellWidth, padCells } from './ui/format.js';
 import { launchEditor } from './ui/editor.js';
+import type { Suspend } from './ui/editor.js';
 import { parseRootsAdd, splitCommand } from './util/args.js';
 
 // Piping into a pager or `head` closes stdout early. Without this, the
@@ -144,10 +146,11 @@ async function cmdList(_rest: string[], refresh: boolean, json: boolean): Promis
     return 0;
   }
 
-  const width = Math.max(...repos.map((r) => r.name.length));
+  // Cells, not code units, so a CJK or emoji name still lines up.
+  const width = Math.max(...repos.map((r) => cellWidth(r.name)));
   for (const repo of repos) {
     const marker = repo.kind === 'normal' ? '' : ` (${repo.kind})`;
-    process.stdout.write(`${repo.name.padEnd(width)}  ${repo.path}${marker}\n`);
+    process.stdout.write(`${padCells(repo.name, width)}  ${repo.path}${marker}\n`);
   }
 
   const timing = cached ? 'from cache' : `scanned in ${elapsedMs}ms`;
@@ -173,26 +176,11 @@ async function cmdDashboard(refresh: boolean): Promise<number> {
     return { groups: await buildGroups(repos, cfg), warnings };
   };
 
-  let instance: { clear: () => void } | undefined;
+  const openInEditor = (path: string, suspend: Suspend): Promise<void> =>
+    launchEditor(cfg.editor, path, suspend);
 
-  const openInEditor = (path: string): Promise<void> =>
-    launchEditor(cfg.editor, path, {
-      before: () => {
-        instance?.clear();
-        const stdin = process.stdin;
-        if (stdin.isTTY === true && stdin.isRaw === true) stdin.setRawMode(false);
-        stdin.pause();
-      },
-      after: () => {
-        const stdin = process.stdin;
-        stdin.resume();
-        if (stdin.isTTY === true) stdin.setRawMode(true);
-        instance?.clear();
-      },
-    });
-
-  instance = render(createElement(App, { load, openInEditor }));
-  await (instance as unknown as { waitUntilExit: () => Promise<void> }).waitUntilExit();
+  const instance = render(createElement(App, { load, openInEditor }));
+  await instance.waitUntilExit();
   return 0;
 }
 

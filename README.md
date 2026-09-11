@@ -1,7 +1,7 @@
 # repo-dash
 
-Multi-repo git dashboard for the terminal: status across every repository, expandable
-worktrees, and dev-server start/stop backed by tmux.
+Multi-repo git dashboard for the terminal: status across every repository and
+expandable worktrees, with tmux-backed dev-server control planned.
 
 Status: phase 3 of 6 (config, discovery, cache, git status, worktrees, and the
 interactive dashboard). Dev-server control lands in phase 4.
