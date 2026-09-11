@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { addRoot, configPath, expandPath, loadConfig, removeRoot, saveConfig } from './config.js';
 import type { Config } from './config.js';
 import { discoverRepos } from './git/discover.js';
@@ -37,7 +38,7 @@ Usage
   repo-dash dev start <repo>     Start a dev server
   repo-dash dev stop <repo>      Stop one
   repo-dash dev restart <repo>   Restart one
-  repo-dash dev logs <repo>      Print recent output from its session
+  repo-dash dev logs <repo>      Print recent output (--lines N, default 200)
   repo-dash dev stop-all         Stop every session this tool started
   repo-dash list [--json]        List discovered repositories
   repo-dash roots                Show configured scan roots
@@ -51,11 +52,25 @@ Options
   --refresh     Bypass the cache and rescan
   --expand      Show linked worktrees under each repository
   --json        Machine-readable output
+  -v, --version Print the version
   -h, --help    Show this help
+
+In the dashboard, the bottom line lists the keys.
 `;
 
 /** Options accepted before a command; everything else belongs to the subcommand. */
-const GLOBAL_FLAGS = new Set(['--refresh', '--json', '--expand', '-h', '--help']);
+const GLOBAL_FLAGS = new Set(['--refresh', '--json', '--expand', '-h', '--help', '-v', '--version']);
+
+/** The version in package.json, read at run time so it cannot drift from the manifest. */
+async function readVersion(): Promise<string> {
+  try {
+    const raw = await readFile(new URL('../package.json', import.meta.url), 'utf8');
+    const version = (JSON.parse(raw) as { version?: unknown }).version;
+    return typeof version === 'string' ? version : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
 
 async function main(argv: string[]): Promise<number> {
   if (argv.includes('-h') || argv.includes('--help')) {
@@ -78,6 +93,11 @@ async function main(argv: string[]): Promise<number> {
   }
   const leading = argv.slice(0, cursor);
   const [command, ...rest] = argv.slice(cursor);
+
+  if (leading.includes('--version') || leading.includes('-v')) {
+    process.stdout.write(`${await readVersion()}\n`);
+    return 0;
+  }
 
   const hasFlag = (name: string): boolean => leading.includes(name) || rest.includes(name);
   const refresh = hasFlag('--refresh');
