@@ -1,8 +1,9 @@
 import { basename } from 'node:path';
 import type { Config } from '../config.js';
 import { pool } from '../util/pool.js';
+import { canonicalPath } from '../util/fs.js';
 import type { DiscoveredRepo, RepoKind } from './discover.js';
-import { runGit } from './exec.js';
+import { runGit, setGitConcurrency } from './exec.js';
 import { readLastCommit } from './log.js';
 import type { LastCommit } from './log.js';
 import { readStatus } from './status.js';
@@ -72,6 +73,8 @@ export async function buildGroups(
   options: SnapshotOptions = {},
 ): Promise<RepoGroup[]> {
   const timeoutMs = options.timeoutMs ?? 10_000;
+  // Every git call shares this ceiling, including the three each probe issues.
+  setGitConcurrency(cfg.concurrency);
   const probes = await pool(repos, cfg.concurrency, (repo) => probe(repo, timeoutMs));
 
   const byCommonDir = new Map<string, Probe[]>();
@@ -84,27 +87,44 @@ export async function buildGroups(
   const groups = await pool(
     [...byCommonDir.entries()],
     cfg.concurrency,
-    ([commonDir, members]) => buildGroup(commonDir, members, timeoutMs),
+    ([commonDir, members]) => buildGroup(commonDir, members, cfg.concurrency, timeoutMs),
   );
 
   groups.sort((a, b) => a.path.localeCompare(b.path));
   return groups;
 }
 
-async function buildGroup(commonDir: string, members: Probe[], timeoutMs: number): Promise<RepoGroup> {
-  const byPath = new Map(members.map((m) => [m.repo.path, m]));
+async function buildGroup(
+  commonDir: string,
+  members: Probe[],
+  concurrency: number,
+  timeoutMs: number,
+): Promise<RepoGroup> {
+  // git reports canonical paths, while a discovered path may run through a
+  // symlinked root. Index both so the two can be matched.
+  const byPath = new Map<string, Probe>();
+  for (const member of members) {
+    byPath.set(member.repo.path, member);
+    const real = await canonicalPath(member.repo.path);
+    if (!byPath.has(real)) byPath.set(real, member);
+  }
+  const find = async (path: string): Promise<Probe | undefined> =>
+    byPath.get(path) ?? byPath.get(await canonicalPath(path));
+
   const anchor = members[0] as Probe;
   const worktrees = await readWorktrees(anchor.repo.path, timeoutMs);
 
   // git lists the main worktree first. Without it, treat the anchor as main.
   const main = worktrees[0];
-  const mainPath = main?.path ?? anchor.repo.path;
-  const mainProbe = byPath.get(mainPath);
+  const reportedMain = main?.path ?? anchor.repo.path;
+  const mainProbe = await find(reportedMain);
   const source = mainProbe ?? anchor;
+  // Prefer the path the user configured, so a symlinked root stays recognizable.
+  const mainPath = mainProbe?.repo.path ?? reportedMain;
 
   const linked = worktrees.slice(1);
-  const views = await pool(linked, Math.max(1, Math.min(4, linked.length)), (wt) =>
-    toView(wt, byPath.get(wt.path), timeoutMs),
+  const views = await pool(linked, concurrency, async (wt) =>
+    toView(wt, await find(wt.path), timeoutMs),
   );
 
   return {
@@ -124,9 +144,10 @@ async function buildGroup(commonDir: string, members: Probe[], timeoutMs: number
 async function toView(wt: Worktree, known: Probe | undefined, timeoutMs: number): Promise<WorktreeView> {
   const status = known ? known.status : await readStatus(wt.path, timeoutMs);
   const lastCommit = known ? known.lastCommit : await readLastCommit(wt.path, timeoutMs);
+  const path = known?.repo.path ?? wt.path;
   return {
-    path: wt.path,
-    name: basename(wt.path),
+    path,
+    name: basename(path),
     branch: wt.branch,
     detached: wt.detached,
     locked: wt.locked,

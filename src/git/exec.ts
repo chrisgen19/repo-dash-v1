@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { Semaphore } from '../util/semaphore.js';
 
 export interface GitResult {
   stdout: string;
@@ -10,6 +11,19 @@ export interface GitResult {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_BUFFER = 16 * 1024 * 1024;
+
+// Shared by every git call, so nested batches cannot multiply past the
+// configured ceiling. One probe issues three commands, which without this
+// would run 3x the limit concurrently.
+const gitLimiter = new Semaphore(8);
+
+export function setGitConcurrency(limit: number): void {
+  gitLimiter.setLimit(limit);
+}
+
+export function gitConcurrency(): number {
+  return gitLimiter.limit;
+}
 
 /**
  * Runs git in `cwd` and resolves with the result even when git fails, so one
@@ -23,7 +37,7 @@ export function runGit(
   args: readonly string[],
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<GitResult> {
-  return new Promise((resolve) => {
+  return gitLimiter.run(() => new Promise<GitResult>((resolve) => {
     execFile(
       'git',
       args as string[],
@@ -45,5 +59,5 @@ export function runGit(
         });
       },
     );
-  });
+  }));
 }

@@ -45,7 +45,7 @@ repo-dash config path                    # print the config location
 | `includeHidden` | `boolean` | Scan dot-directories. Off by default, since those are mostly tool state. |
 | `scanInsideRepos` | `boolean` | Keep scanning below a repo root so nested repos are found. |
 | `followSymlinks` | `boolean` | Off by default: on WSL2 symlinks often lead into `/mnt/c`, which is slow. |
-| `concurrency` | `number` | Parallel directory reads and git invocations. |
+| `concurrency` | `number` | Ceiling on parallel directory reads, and a shared ceiling on git subprocesses across every phase of a read. |
 | `editor` | `string` | Command used by the open-in-editor key. Defaults to `$VISUAL`, then `$EDITOR`, then `code`. |
 | `cacheTtlSeconds` | `number` | How long discovery results stay cached. |
 | `repos` | `Record<path, override>` | Per-repo `devCommand`, `devScript`, `packageManager`, `hidden`. |
@@ -119,6 +119,8 @@ src/
   git/snapshot.ts   groups worktrees with their parent repository
   ui/table.ts       plain-text table renderer
   util/args.ts      argument parsing
+  util/fs.ts        canonical path resolution
+  util/semaphore.ts shared concurrency ceiling
   util/pool.ts      bounded-concurrency runner
   util/glob.ts      ignore-pattern matcher
 ```

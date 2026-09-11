@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, realpath, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runGit } from './exec.js';
+import { runGit, gitConcurrency } from './exec.js';
 import { discoverRepos } from './discover.js';
 import { buildGroups } from './snapshot.js';
 import type { Config } from '../config.js';
@@ -94,4 +94,33 @@ test('a repository with no commits reports a branch but no last commit', async (
   assert.equal(groups[0]?.status?.branch, 'main');
   assert.equal(groups[0]?.status?.oid, null);
   assert.equal(groups[0]?.lastCommit, null);
+});
+
+test('a root reached through a symlink still matches its git-reported path', async () => {
+  // Regression: git reports canonical paths, so a symlinked root left the main
+  // worktree unmatched, labelled external, and read a second time.
+  const root = await sandbox();
+  await mkdir(join(root, 'real'), { recursive: true });
+  await initRepo(join(root, 'real', 'app'));
+  await runGit(join(root, 'real', 'app'), [
+    'worktree', 'add', '-q', join(root, 'real', 'app-wt'), '-b', 'wtb',
+  ]);
+  await symlink(join(root, 'real'), join(root, 'alias'));
+
+  const groups = await groupsFor(join(root, 'alias'));
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0]?.discovered, true, 'main worktree should be recognised, not external');
+  assert.equal(groups[0]?.worktrees.length, 1);
+  assert.ok(groups[0]?.path.includes('/alias/'), 'the configured path is preserved for display');
+});
+
+test('git subprocesses respect the configured concurrency', async () => {
+  const root = await sandbox();
+  for (const name of ['a', 'b', 'c', 'd', 'e', 'f']) await initRepo(join(root, name));
+
+  const cfg = config(root);
+  cfg.concurrency = 2;
+  const { repos } = await discoverRepos(cfg);
+  await buildGroups(repos, cfg);
+  assert.equal(gitConcurrency(), 2, 'buildGroups applies the configured limit to the shared git limiter');
 });

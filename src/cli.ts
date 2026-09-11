@@ -136,6 +136,11 @@ async function cmdStatus(refresh: boolean, expand: boolean, json: boolean): Prom
     process.stderr.write(`warning: root not found, skipped: ${root}\n`);
   }
   if (repos.length === 0) {
+    // --json must stay machine-readable even with nothing to report.
+    if (json) {
+      process.stdout.write(`${JSON.stringify({ groups: [], missingRoots }, null, 2)}\n`);
+      return 0;
+    }
     process.stdout.write(`No repositories found.\nEdit ${configPath()} or run: repo-dash roots add <path>\n`);
     return 0;
   }
@@ -144,7 +149,7 @@ async function cmdStatus(refresh: boolean, expand: boolean, json: boolean): Prom
   const groups = await buildGroups(repos, cfg);
 
   if (json) {
-    process.stdout.write(`${JSON.stringify({ groups }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ groups, missingRoots }, null, 2)}\n`);
     return 0;
   }
 
