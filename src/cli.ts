@@ -6,12 +6,22 @@ import type { Config } from './config.js';
 import { discoverRepos } from './git/discover.js';
 import type { DiscoveredRepo } from './git/discover.js';
 import { clearCache, readCache, writeCache } from './cache.js';
+import { buildGroups } from './git/snapshot.js';
+import { renderTable } from './ui/table.js';
 import { parseRootsAdd, splitCommand } from './util/args.js';
+
+// Piping into a pager or `head` closes stdout early. Without this, the
+// resulting EPIPE surfaces as an unhandled error and a stack trace.
+process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EPIPE') process.exit(0);
+  throw err;
+});
 
 const HELP = `repo-dash - multi-repo git dashboard
 
 Usage
   repo-dash                      Launch the dashboard (available from phase 3)
+  repo-dash status [--expand]    Branch, ahead/behind and dirty counts per repo
   repo-dash list [--json]        List discovered repositories
   repo-dash roots                Show configured scan roots
   repo-dash roots add <path> [--depth N]
@@ -22,6 +32,7 @@ Usage
 
 Options
   --refresh     Bypass the cache and rescan
+  --expand      Show linked worktrees under each repository
   --json        Machine-readable output
   -h, --help    Show this help
 `;
@@ -38,6 +49,8 @@ async function main(argv: string[]): Promise<number> {
     case undefined:
     case 'list':
       return cmdList(rest, argv.includes('--refresh'), argv.includes('--json'));
+    case 'status':
+      return cmdStatus(argv.includes('--refresh'), argv.includes('--expand'), argv.includes('--json'));
     case 'roots':
       return cmdRoots(rest);
     case 'config':
@@ -112,6 +125,51 @@ async function cmdList(_rest: string[], refresh: boolean, json: boolean): Promis
 
   const timing = cached ? 'from cache' : `scanned in ${elapsedMs}ms`;
   process.stdout.write(`\n${repos.length} repositories, ${timing}\n`);
+  return 0;
+}
+
+function plural(count: number, singular: string, many = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : many}`;
+}
+
+async function cmdStatus(refresh: boolean, expand: boolean, json: boolean): Promise<number> {
+  const cfg = await loadConfig();
+  const { repos, missingRoots } = await getRepos(cfg, refresh);
+
+  for (const root of missingRoots) {
+    process.stderr.write(`warning: root not found, skipped: ${root}\n`);
+  }
+  if (repos.length === 0) {
+    // --json must stay machine-readable even with nothing to report.
+    if (json) {
+      process.stdout.write(`${JSON.stringify({ groups: [], missingRoots }, null, 2)}\n`);
+      return 0;
+    }
+    process.stdout.write(`No repositories found.\nEdit ${configPath()} or run: repo-dash roots add <path>\n`);
+    return 0;
+  }
+
+  const started = Date.now();
+  const groups = await buildGroups(repos, cfg);
+
+  if (json) {
+    process.stdout.write(`${JSON.stringify({ groups, missingRoots }, null, 2)}\n`);
+    return 0;
+  }
+
+  process.stdout.write(`${renderTable(groups, { expand })}\n`);
+
+  const worktrees = groups.reduce((n, g) => n + g.worktrees.length, 0);
+  // Counts every working tree with changes, main and linked alike, so the
+  // summary cannot contradict a dirty worktree shown under --expand.
+  const dirty =
+    groups.filter((g) => (g.status?.dirty ?? 0) > 0).length +
+    groups.reduce((n, g) => n + g.worktrees.filter((w) => (w.status?.dirty ?? 0) > 0).length, 0);
+  process.stdout.write(
+    `\n${plural(groups.length, 'repository', 'repositories')}, ` +
+      `${plural(worktrees, 'linked worktree')}, ` +
+      `${plural(dirty, 'dirty working tree')}, read in ${Date.now() - started}ms\n`,
+  );
   return 0;
 }
 

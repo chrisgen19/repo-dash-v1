@@ -50,6 +50,11 @@ test('nested worktree and submodule markers resolve to the innermost kind', asyn
     ['plain-sub', '../.git/modules/sub', 'submodule'],
     ['wt-of-sub', '/p/.git/modules/sub/worktrees/wt', 'worktree'],
     ['unknown', '/somewhere/else', 'linked'],
+    // A marker is only structural when a name follows it, so a submodule or
+    // worktree whose own name is "worktrees" or "modules" is not misread.
+    ['sub-named-worktrees', '../.git/modules/worktrees', 'submodule'],
+    ['wt-named-modules', '/p/.git/worktrees/modules', 'worktree'],
+    ['deep-sub-named-worktrees', '/p/.git/worktrees/wt/modules/worktrees', 'submodule'],
   ];
   for (const [name, gitdir, expected] of cases) {
     const dir = await pointerRepo(root, name, gitdir);
