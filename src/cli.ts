@@ -13,6 +13,9 @@ import { basename } from 'node:path';
 import { cellWidth, padCells } from './ui/format.js';
 import { launchEditor } from './ui/editor.js';
 import { attachDev, readDevStates, restartDev, startDev, stopAllDev, stopDev } from './proc/dev.js';
+import { listSessions, tmuxAvailable } from './proc/tmux.js';
+import { portsByPane } from './proc/ports.js';
+import { canonicalPath } from './util/fs.js';
 import type { LoadResult, DevAction } from './ui/app.js';
 import type { Suspend } from './ui/editor.js';
 import { parseRootsAdd, splitCommand } from './util/args.js';
@@ -88,7 +91,7 @@ async function main(argv: string[]): Promise<number> {
     case 'status':
       return cmdStatus(refresh, hasFlag('--expand'), hasFlag('--json'));
     case 'dev':
-      return cmdDev(rest);
+      return cmdDev(rest, refresh);
     case 'roots':
       return cmdRoots(rest);
     case 'config':
@@ -261,42 +264,73 @@ async function cmdStatus(refresh: boolean, expand: boolean, json: boolean): Prom
   return 0;
 }
 
-/** Resolves a repository argument by exact path, or by unique name. */
-async function findRepoPath(cfg: Config, needle: string): Promise<string | { error: string }> {
-  const absolute = expandPath(needle);
-  const { repos } = await getRepos(cfg, false);
-  const byPath = repos.find((r) => r.path === absolute);
-  if (byPath) return byPath.path;
+/**
+ * Every working directory the dashboard can act on: each repository's main
+ * checkout plus its linked worktrees. Discovery alone is not enough, because a
+ * main checkout outside the roots is still shown, and acted on, via a worktree
+ * that is inside them.
+ */
+async function dashboardPaths(cfg: Config, refresh: boolean): Promise<string[]> {
+  const { repos } = await getRepos(cfg, refresh);
+  if (repos.length === 0) return [];
+  const groups = await buildGroups(repos, cfg);
+  return groups.flatMap((g) => [g.path, ...g.worktrees.map((w) => w.path)]);
+}
 
-  const matches = repos.filter((r) => r.name === needle);
-  if (matches.length === 1) return (matches[0] as (typeof matches)[number]).path;
+/**
+ * Resolves a repository argument to a path: an exact path in either form, or a
+ * unique basename. Running sessions are candidates too, so a server can be
+ * stopped even after its repository leaves the configured roots.
+ */
+async function findRepoPath(
+  cfg: Config,
+  needle: string,
+  refresh: boolean,
+): Promise<string | { error: string }> {
+  const candidates = new Set(await dashboardPaths(cfg, refresh));
+  for (const session of (await listSessions()).values()) {
+    if (session.path !== null) candidates.add(session.path);
+  }
+
+  const absolute = expandPath(needle);
+  const real = await canonicalPath(absolute);
+  for (const path of candidates) {
+    if (path === absolute || path === needle) return path;
+    if ((await canonicalPath(path)) === real) return path;
+  }
+
+  const matches = [...candidates].filter((path) => basename(path) === needle);
+  if (matches.length === 1) return matches[0] as string;
   if (matches.length === 0) return { error: `no repository named "${needle}"` };
   return { error: `"${needle}" matches ${matches.length} repositories; use a full path` };
 }
 
-async function cmdDev(rest: string[]): Promise<number> {
+async function cmdDev(rest: string[], refresh: boolean): Promise<number> {
   const cfg = await loadConfig();
   const [sub, target] = rest;
 
   if (sub === undefined || sub === 'list') {
-    const { repos } = await getRepos(cfg, false);
-    const paths = repos.map((r) => r.path);
-    const { tmux, states } = await readDevStates(paths, cfg);
-    if (!tmux) {
+    if (!(await tmuxAvailable())) {
       process.stderr.write('tmux is not installed, so no dev servers can run\n');
       return 1;
     }
-    const running = [...states.values()].filter((s) => s.running);
-    if (running.length === 0) {
+    // Sessions record their own directory, so this lists everything running
+    // regardless of whether the repository is still inside a scan root.
+    const sessions = [...(await listSessions()).values()];
+    if (sessions.length === 0) {
       process.stdout.write('No dev servers running.\n');
       return 0;
     }
-    const width = Math.max(...running.map((s) => cellWidth(basename(s.path))));
-    for (const state of running) {
-      const ports = state.ports.length > 0 ? `:${state.ports.join(',')}` : '(no port yet)';
-      process.stdout.write(`${padCells(basename(state.path), width)}  ${ports}  ${state.path}\n`);
+
+    const ports = await portsByPane(sessions.map((s) => s.panePid));
+    const label = (s: (typeof sessions)[number]): string => (s.path === null ? s.name : basename(s.path));
+    const width = Math.max(...sessions.map((s) => cellWidth(label(s))));
+    for (const session of sessions) {
+      const found = ports.get(session.panePid) ?? [];
+      const shown = found.length > 0 ? `:${found.join(',')}` : '(no port yet)';
+      process.stdout.write(`${padCells(label(session), width)}  ${shown}  ${session.path ?? session.name}\n`);
     }
-    process.stdout.write(`\n${plural(running.length, 'dev server')} running\n`);
+    process.stdout.write(`\n${plural(sessions.length, 'dev server')} running\n`);
     return 0;
   }
 
@@ -315,7 +349,7 @@ async function cmdDev(rest: string[]): Promise<number> {
     return 1;
   }
 
-  const found = await findRepoPath(cfg, target);
+  const found = await findRepoPath(cfg, target, refresh);
   if (typeof found !== 'string') {
     process.stderr.write(`${found.error}\n`);
     return 1;

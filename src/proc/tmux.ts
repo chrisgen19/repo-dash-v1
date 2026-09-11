@@ -9,7 +9,12 @@ export interface Session {
   panePid: number;
   /** Unix seconds when the session started. */
   created: number;
+  /** Working directory the session was started for, recorded on the session. */
+  path: string | null;
 }
+
+/** User option carrying the repository path, so a session is self-describing. */
+const PATH_OPTION = '@rd_path';
 
 const PREFIX = 'rd_';
 
@@ -32,8 +37,10 @@ export async function tmuxAvailable(): Promise<boolean> {
 
 /** Sessions this tool started, keyed by name. Sessions it did not start are ignored. */
 export async function listSessions(): Promise<Map<string, Session>> {
+  // The recorded path comes last: a path may legally contain a tab, while the
+  // name and the two numbers cannot.
   const result = await run('tmux', [
-    'list-sessions', '-F', '#{session_name}\t#{pane_pid}\t#{session_created}',
+    'list-sessions', '-F', `#{session_name}\t#{pane_pid}\t#{session_created}\t#{${PATH_OPTION}}`,
   ]);
   const sessions = new Map<string, Session>();
   // A missing server exits non-zero with "no server running", which is normal.
@@ -41,12 +48,15 @@ export async function listSessions(): Promise<Map<string, Session>> {
 
   for (const line of result.stdout.split('\n')) {
     if (!line.startsWith(PREFIX)) continue;
-    const [name, pid, created] = line.split('\t');
+    const fields = line.split('\t');
+    const [name, pid, created] = fields;
     if (name === undefined) continue;
+    const path = fields.slice(3).join('\t');
     sessions.set(name, {
       name,
       panePid: Number.parseInt(pid ?? '', 10) || 0,
       created: Number.parseInt(created ?? '', 10) || 0,
+      path: path === '' ? null : path,
     });
   }
   return sessions;
@@ -59,8 +69,12 @@ export async function listSessions(): Promise<Map<string, Session>> {
 export async function startSession(name: string, cwd: string, argv: readonly string[]): Promise<string | null> {
   if (argv.length === 0) return 'no command to run';
   const result = await run('tmux', ['new-session', '-d', '-s', name, '-c', cwd, '--', ...argv]);
-  if (result.code === 0) return null;
-  return result.stderr.trim() || `tmux exited with ${result.code}`;
+  if (result.code !== 0) return result.stderr.trim() || `tmux exited with ${result.code}`;
+
+  // Record the directory on the session so it can be listed without a scan.
+  // The trailing colon is required: the target is resolved as a pane.
+  await run('tmux', ['set-option', '-t', `=${name}:`, PATH_OPTION, cwd]);
+  return null;
 }
 
 export async function killSession(name: string): Promise<string | null> {

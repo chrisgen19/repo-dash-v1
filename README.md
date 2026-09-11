@@ -181,6 +181,12 @@ repo-dash dev restart <repo>
 repo-dash dev stop-all
 ```
 
+Each session records the directory it was started for, so `repo-dash dev` lists
+everything this tool is running even if that repository has since left the
+configured roots. `start`, `stop` and `restart` accept any working directory the
+dashboard can show, including a main checkout that sits outside the roots but
+owns a worktree inside them, and any running session.
+
 The command to run is worked out per repository: a `devCommand` override wins,
 otherwise the first of `dev`, `start` or `serve` in `package.json`, run through
 the package manager named in `packageManager` or implied by the lockfile.

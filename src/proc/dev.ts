@@ -1,5 +1,6 @@
 import type { Config } from '../config.js';
 import { pool } from '../util/pool.js';
+import { buildOverrideIndex } from '../util/overrides.js';
 import { resolveDevCommand } from './pkg.js';
 import { portsByPane } from './ports.js';
 import { attachSession, capturePane, killSession, listSessions, sessionName, startSession, tmuxAvailable } from './tmux.js';
@@ -47,8 +48,10 @@ export async function readDevStates(paths: readonly string[], cfg: Config): Prom
   }
 
   const sessions = await listSessions();
-  const commands = await pool(paths, cfg.concurrency, (path) =>
-    resolveDevCommand(path, cfg.repos[path]),
+  // Overrides may be keyed by either the configured or the canonical path.
+  const overrides = await buildOverrideIndex(cfg);
+  const commands = await pool(paths, cfg.concurrency, async (path) =>
+    resolveDevCommand(path, await overrides.lookup(path)),
   );
 
   // One socket read covers every running session.
@@ -82,7 +85,8 @@ export async function startDev(path: string, cfg: Config): Promise<string | null
   const name = sessionName(path);
   if ((await listSessions()).has(name)) return 'already running';
 
-  const dev = await resolveDevCommand(path, cfg.repos[path]);
+  const overrides = await buildOverrideIndex(cfg);
+  const dev = await resolveDevCommand(path, await overrides.lookup(path));
   if (dev.argv.length === 0) return dev.reason ?? 'nothing to run';
   return startSession(name, path, dev.argv);
 }

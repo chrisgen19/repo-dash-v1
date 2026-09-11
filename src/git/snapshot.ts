@@ -2,6 +2,8 @@ import { basename } from 'node:path';
 import type { Config } from '../config.js';
 import { pool } from '../util/pool.js';
 import { canonicalPath } from '../util/fs.js';
+import { buildOverrideIndex } from '../util/overrides.js';
+import type { OverrideIndex } from '../util/overrides.js';
 import { classifyRepoPath } from './discover.js';
 import type { DiscoveredRepo, RepoKind } from './discover.js';
 import { runGit, setGitConcurrency } from './exec.js';
@@ -89,12 +91,12 @@ export async function buildGroups(
 
   // Discovery drops hidden repos, but git reports every worktree, so the
   // override has to be applied again to what git returns.
-  const hidden = await hiddenPaths(cfg);
+  const overrides = await buildOverrideIndex(cfg);
 
   const built = await pool(
     [...byCommonDir.entries()],
     cfg.concurrency,
-    ([commonDir, members]) => buildGroup(commonDir, members, cfg.concurrency, timeoutMs, hidden),
+    ([commonDir, members]) => buildGroup(commonDir, members, cfg.concurrency, timeoutMs, overrides),
   );
 
   const groups = built.filter((g): g is RepoGroup => g !== null);
@@ -102,29 +104,12 @@ export async function buildGroups(
   return groups;
 }
 
-/** Absolute paths marked hidden, indexed by both configured and canonical form. */
-async function hiddenPaths(cfg: Config): Promise<Set<string>> {
-  const hidden = new Set<string>();
-  for (const [path, override] of Object.entries(cfg.repos)) {
-    if (override?.hidden !== true) continue;
-    hidden.add(path);
-    hidden.add(await canonicalPath(path));
-  }
-  return hidden;
-}
-
-async function isHidden(path: string, hidden: Set<string>): Promise<boolean> {
-  if (hidden.size === 0) return false;
-  if (hidden.has(path)) return true;
-  return hidden.has(await canonicalPath(path));
-}
-
 async function buildGroup(
   commonDir: string,
   members: Probe[],
   concurrency: number,
   timeoutMs: number,
-  hidden: Set<string>,
+  overrides: OverrideIndex,
 ): Promise<RepoGroup | null> {
   // git reports canonical paths, while a discovered path may run through a
   // symlinked root. Index both so the two can be matched.
@@ -158,8 +143,8 @@ async function buildGroup(
   // Hiding a repository hides it whole, worktrees included. Without this the
   // main checkout returns through git's own listing, mislabelled, because the
   // probe that described it was filtered out during discovery.
-  if (await isHidden(mainPath, hidden)) return null;
-  if (mainPath !== reportedMain && (await isHidden(reportedMain, hidden))) return null;
+  if (await overrides.isHidden(mainPath)) return null;
+  if (mainPath !== reportedMain && (await overrides.isHidden(reportedMain))) return null;
 
   const linked: Worktree[] = [];
   for (const wt of worktrees.slice(1)) {
@@ -167,8 +152,8 @@ async function buildGroup(
     const path = known?.repo.path ?? wt.path;
     // Defensive: whatever became the main row is never also a child of it.
     if (path === mainPath || wt.path === reportedMain) continue;
-    if (await isHidden(path, hidden)) continue;
-    if (path !== wt.path && (await isHidden(wt.path, hidden))) continue;
+    if (await overrides.isHidden(path)) continue;
+    if (path !== wt.path && (await overrides.isHidden(wt.path))) continue;
     linked.push(wt);
   }
 

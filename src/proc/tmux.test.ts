@@ -112,3 +112,35 @@ test('pane output can be read back', async (t) => {
 test('starting with no command is refused', async () => {
   assert.equal(await startSession('rd_unused', tmpdir(), []), 'no command to run');
 });
+
+test('a session records the directory it was started for', async (t) => {
+  // Regression: `dev list` scanned the configured roots, so a server started
+  // on a repository outside them was reported as not running at all.
+  if (!(await tmuxAvailable())) return t.skip('tmux not installed');
+
+  const dir = await devFixture(39189);
+  const name = sessionName(dir);
+  try {
+    assert.equal(await startDev(dir, config()), null);
+    await settle(1200);
+    const session = (await listSessions()).get(name);
+    assert.equal(session?.path, dir, 'the path is readable from the session itself');
+  } finally {
+    await killSession(name);
+  }
+});
+
+test('a path containing a tab survives the session listing', async (t) => {
+  if (!(await tmuxAvailable())) return t.skip('tmux not installed');
+  const name = `rd_tab_${process.pid}`;
+  const weird = '/tmp/has\ttab';
+  try {
+    await startSession(name, tmpdir(), ['sleep', '30']);
+    // The recorded path is the last field precisely so a tab cannot split it.
+    const { run } = await import('../util/run.js');
+    await run('tmux', ['set-option', '-t', `=${name}:`, '@rd_path', weird]);
+    assert.equal((await listSessions()).get(name)?.path, weird);
+  } finally {
+    await killSession(name);
+  }
+});
