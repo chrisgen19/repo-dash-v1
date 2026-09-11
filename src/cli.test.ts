@@ -175,16 +175,55 @@ test('--version prints the version from package.json', async () => {
   }
 });
 
-test('help lists every command the CLI accepts', async () => {
-  // Help is hand-written, so this is what stops it drifting from the switch.
+/** Command names in the help's Usage section: the words before any argument or option. */
+function usageCommands(help: string): string[] {
+  const usage = help.split('\nOptions\n')[0] ?? '';
+  return usage
+    .split('\n')
+    .filter((line) => line.startsWith('  repo-dash'))
+    .map((line) => {
+      const signature = line.trim().split(/\s{2,}/)[0] ?? '';
+      const words: string[] = [];
+      for (const word of signature.split(' ')) {
+        if (word.startsWith('<') || word.startsWith('[') || word.startsWith('-')) break;
+        words.push(word);
+      }
+      return words.join(' ');
+    });
+}
+
+/** Every flag named in the help's Options section. */
+function optionFlags(help: string): string[] {
+  const options = help.split('\nOptions\n')[1]?.split('\n\n')[0] ?? '';
+  return [...options.matchAll(/(?:^|[\s,])(--?[a-z][a-z-]*)(?=[\s,]|$)/gm)].map((m) => m[1] as string);
+}
+
+test('help documents exactly the commands and options the CLI accepts', async () => {
+  // Help is hand-written. It is compared as a set of exact command names, not
+  // searched for substrings, so a deleted line cannot hide inside a longer one
+  // that contains it: "repo-dash dev" inside "repo-dash dev start", or
+  // "repo-dash dev stop" inside "repo-dash dev stop-all".
   const home = await emptyConfigHome();
   const { stdout } = await run(['--help'], home);
-  for (const usage of [
-    'repo-dash status', 'repo-dash dev start', 'repo-dash dev stop', 'repo-dash dev restart',
-    'repo-dash dev logs', '--lines', 'repo-dash dev stop-all', 'repo-dash list',
-    'repo-dash roots add', 'repo-dash roots rm', 'repo-dash config path',
-    'repo-dash config edit', 'repo-dash cache clear', '--version', '--refresh', '--json',
-  ]) {
-    assert.ok(stdout.includes(usage), `help is missing "${usage}"`);
-  }
+
+  assert.deepEqual(usageCommands(stdout).sort(), [
+    'repo-dash', 'repo-dash status', 'repo-dash list',
+    'repo-dash dev', 'repo-dash dev start', 'repo-dash dev stop', 'repo-dash dev restart',
+    'repo-dash dev logs', 'repo-dash dev stop-all',
+    'repo-dash roots', 'repo-dash roots add', 'repo-dash roots rm',
+    'repo-dash config path', 'repo-dash config edit', 'repo-dash cache clear',
+  ].sort());
+  assert.match(stdout, /repo-dash dev logs <repo>.*--lines/, 'dev logs documents --lines');
+  assert.deepEqual(
+    optionFlags(stdout).sort(),
+    ['--refresh', '--expand', '--json', '-v', '--version', '-h', '--help'].sort(),
+  );
+
+  // Tie help to the dispatcher itself, so a command added to main() without
+  // a help line fails here rather than relying on this list being updated.
+  const source = readFileSync(fileURLToPath(new URL('../src/cli.ts', import.meta.url)), 'utf8');
+  const handled = [...source.matchAll(/^ {4}case '([a-z][a-z-]*)':/gm)].map((m) => m[1] as string);
+  assert.ok(handled.length >= 6, `expected the dispatcher's cases, found ${handled.length}`);
+  const documented = new Set(usageCommands(stdout).map((c) => c.split(' ')[1]).filter(Boolean));
+  for (const name of handled) assert.ok(documented.has(name), `"${name}" is handled but not in help`);
 });
