@@ -240,3 +240,14 @@ test('a signed commit parses to a bare hash', async (t) => {
   assert.equal(last?.hash.length, 40, `hash should be a bare oid, got ${last?.hash.length} chars`);
   assert.equal(last?.subject, 'signed');
 });
+
+test('concurrent git reads all settle', async () => {
+  // The environment bootstrap is resolved before a permit is taken, so a slow
+  // bootstrap cannot hold every permit and stall the run.
+  const root = await sandbox();
+  await initRepo(join(root, 'app'));
+  const results = await Promise.all(
+    Array.from({ length: 20 }, () => runGit(join(root, 'app'), ['rev-parse', 'HEAD'])),
+  );
+  assert.equal(results.filter((r) => r.code === 0).length, 20);
+});

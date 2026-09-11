@@ -28,12 +28,13 @@ export interface DiscoveredRepo {
 /**
  * A `.git` file alone cannot tell a linked worktree from a submodule: both are
  * pointer files. The gitdir target distinguishes them, but the two markers
- * nest in either order, so the last one wins:
+ * nest in either order, so the innermost structural marker wins:
  *
  *   .git/worktrees/wt                  -> worktree
  *   .git/worktrees/wt/modules/sub      -> submodule inside a worktree
  *   .git/modules/sub                   -> submodule
  *   .git/modules/sub/worktrees/wt      -> worktree of a submodule
+ *   .git/modules/worktrees             -> submodule that is named "worktrees"
  */
 export async function classifyGitEntry(dir: string, gitIsFile: boolean): Promise<RepoKind> {
   if (!gitIsFile) return 'normal';
@@ -43,10 +44,20 @@ export async function classifyGitEntry(dir: string, gitIsFile: boolean): Promise
     if (!match) return 'linked';
 
     const segments = (match[1] ?? '').trim().replace(/\\/g, '/').split('/');
-    const worktreeAt = segments.lastIndexOf('worktrees');
-    const moduleAt = segments.lastIndexOf('modules');
-    if (worktreeAt === -1 && moduleAt === -1) return 'linked';
-    return worktreeAt > moduleAt ? 'worktree' : 'submodule';
+
+    // A marker is structural only when a name follows it, as in
+    // ".git/modules/<name>". The final segment is that name, so a submodule
+    // called "worktrees" must not be read as a worktree marker.
+    let kind: RepoKind = 'linked';
+    let found = -1;
+    for (let i = 0; i < segments.length - 1; i++) {
+      const segment = segments[i];
+      if (segment !== 'worktrees' && segment !== 'modules') continue;
+      if (i <= found) continue;
+      found = i;
+      kind = segment === 'worktrees' ? 'worktree' : 'submodule';
+    }
+    return found === -1 ? 'linked' : kind;
   } catch {
     return 'linked';
   }

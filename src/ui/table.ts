@@ -30,6 +30,22 @@ export function formatDirty(status: GitStatus | null): string {
   return marks.join('');
 }
 
+/**
+ * Renders control characters visibly instead of passing them to the terminal.
+ * A repository name is a filesystem basename, so it may contain a newline,
+ * which would split a row, or an ESC, which would emit a terminal sequence and
+ * also throw the column widths off.
+ */
+export function sanitizeLabel(value: string): string {
+  const named: Record<string, string> = { '\n': '\\n', '\r': '\\r', '\t': '\\t' };
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\u0000-\u001F\u007F]/g, (ch) => {
+    const shorthand = named[ch];
+    if (shorthand !== undefined) return shorthand;
+    return `\\x${ch.charCodeAt(0).toString(16).padStart(2, '0')}`;
+  });
+}
+
 function pad(value: string, width: number): string {
   // Arrow glyphs are single-width, so length is an adequate proxy here.
   return value + ' '.repeat(Math.max(0, width - value.length));
@@ -41,7 +57,8 @@ interface Row {
 }
 
 function groupRow(group: RepoGroup): Row {
-  const name = group.discovered ? group.name : `${group.name} (external)`;
+  const safe = sanitizeLabel(group.name);
+  const name = group.discovered ? safe : `${safe} (external)`;
   const suffix = group.kind === 'normal' ? '' : ` [${group.kind}]`;
   return {
     indent: 0,
@@ -60,7 +77,8 @@ function worktreeRow(wt: WorktreeView): Row {
   const flags: string[] = [];
   if (wt.locked) flags.push('locked');
   if (wt.prunable) flags.push('prunable');
-  const label = flags.length > 0 ? `${wt.name} (${flags.join(', ')})` : wt.name;
+  const safe = sanitizeLabel(wt.name);
+  const label = flags.length > 0 ? `${safe} (${flags.join(', ')})` : safe;
   return {
     indent: 1,
     cells: [

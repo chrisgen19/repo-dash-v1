@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatAheadBehind, formatBranch, formatDirty, renderTable } from './table.js';
+import { formatAheadBehind, formatBranch, formatDirty, renderTable, sanitizeLabel } from './table.js';
 import type { GitStatus } from '../git/status.js';
 import type { RepoGroup } from '../git/snapshot.js';
 
@@ -59,4 +59,31 @@ test('an external main worktree is labelled', () => {
     rootLabel: undefined, discovered: false, status: null, lastCommit: null, worktrees: [],
   };
   assert.ok(renderTable([group], { expand: false }).includes('app (external)'));
+});
+
+test('sanitizeLabel renders control characters visibly', () => {
+  assert.equal(sanitizeLabel('plain-name'), 'plain-name');
+  assert.equal(sanitizeLabel('two\nlines'), 'two\\nlines');
+  assert.equal(sanitizeLabel('a\tb'), 'a\\tb');
+  assert.equal(sanitizeLabel('evil\u001b[31mRED'), 'evil\\x1b[31mRED');
+  assert.equal(sanitizeLabel('bell\u0007'), 'bell\\x07');
+});
+
+test('a name containing a newline stays on one row', () => {
+  // Regression: a basename may contain a newline, which split the row in two
+  // and threw off every column width below it.
+  const group: RepoGroup = {
+    name: 'two\nlines', path: '/r/x', commonDir: '/r/x/.git', kind: 'normal',
+    rootLabel: undefined, discovered: true, status: status({}), lastCommit: null,
+    worktrees: [{
+      path: '/r/wt', name: 'wt\u001b[31m', branch: 'b', detached: false,
+      locked: false, prunable: false, status: status({}), lastCommit: null,
+    }],
+  };
+
+  const rendered = renderTable([group], { expand: true });
+  assert.equal(rendered.split('\n').length, 3, 'header plus two rows');
+  assert.ok(!rendered.includes('\u001b'), 'no raw escape reaches the terminal');
+  assert.ok(rendered.includes('two\\nlines'));
+  assert.ok(rendered.includes('wt\\x1b[31m'));
 });

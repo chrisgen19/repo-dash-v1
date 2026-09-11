@@ -46,11 +46,16 @@ let localEnvVars: Promise<string[]> | undefined;
  */
 function readLocalEnvVars(): Promise<string[]> {
   localEnvVars ??= new Promise<string[]>((resolve) => {
-    execFile('git', ['rev-parse', '--local-env-vars'], { windowsHide: true }, (err, stdout) => {
-      if (err !== null) return resolve(FALLBACK_LOCAL_ENV_VARS);
-      const names = stdout.split('\n').map((n) => n.trim()).filter((n) => n !== '');
-      resolve(names.length > 0 ? names : FALLBACK_LOCAL_ENV_VARS);
-    });
+    execFile(
+      'git',
+      ['rev-parse', '--local-env-vars'],
+      { windowsHide: true, timeout: DEFAULT_TIMEOUT_MS, maxBuffer: MAX_BUFFER },
+      (err, stdout) => {
+        if (err !== null) return resolve(FALLBACK_LOCAL_ENV_VARS);
+        const names = stdout.split('\n').map((n) => n.trim()).filter((n) => n !== '');
+        resolve(names.length > 0 ? names : FALLBACK_LOCAL_ENV_VARS);
+      },
+    );
   });
   return localEnvVars;
 }
@@ -78,13 +83,16 @@ async function childEnv(): Promise<NodeJS.ProcessEnv> {
  * `GIT_OPTIONAL_LOCKS=0` keeps read-only commands from taking the index lock,
  * which matters when reading dozens of repositories the user may be working in.
  */
-export function runGit(
+export async function runGit(
   cwd: string,
   args: readonly string[],
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<GitResult> {
-  return gitLimiter.run(async () => {
-    const env = await childEnv();
+  // Resolved before taking a permit: awaiting it while holding one would let a
+  // slow bootstrap occupy every permit and stall all git reads.
+  const env = await childEnv();
+
+  return gitLimiter.run(() => {
     return new Promise<GitResult>((resolve) => {
       execFile(
         'git',
