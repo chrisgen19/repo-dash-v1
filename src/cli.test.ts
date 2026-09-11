@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -160,4 +161,30 @@ test('dev logs reports a bad --lines value before looking up the repository', as
   const good = await run(['dev', 'logs', 'anything', '--lines', '5'], home);
   assert.equal(good.code, 1);
   assert.match(good.stderr, /no repository named "anything"/);
+});
+
+test('--version prints the version from package.json', async () => {
+  const manifest = JSON.parse(
+    readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
+  ) as { version: string };
+  const home = await emptyConfigHome();
+  for (const flag of ['--version', '-v']) {
+    const { stdout, code } = await run([flag], home);
+    assert.equal(code, 0);
+    assert.equal(stdout.trim(), manifest.version, flag);
+  }
+});
+
+test('help lists every command the CLI accepts', async () => {
+  // Help is hand-written, so this is what stops it drifting from the switch.
+  const home = await emptyConfigHome();
+  const { stdout } = await run(['--help'], home);
+  for (const usage of [
+    'repo-dash status', 'repo-dash dev start', 'repo-dash dev stop', 'repo-dash dev restart',
+    'repo-dash dev logs', '--lines', 'repo-dash dev stop-all', 'repo-dash list',
+    'repo-dash roots add', 'repo-dash roots rm', 'repo-dash config path',
+    'repo-dash config edit', 'repo-dash cache clear', '--version', '--refresh', '--json',
+  ]) {
+    assert.ok(stdout.includes(usage), `help is missing "${usage}"`);
+  }
 });

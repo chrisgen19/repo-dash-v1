@@ -3,15 +3,45 @@
 Multi-repo git dashboard for the terminal: status across every repository,
 expandable worktrees, and tmux-backed dev-server control.
 
-Status: phase 5 of 6. Polish is still to come.
+Status: feature-complete. All six planned phases are in.
 
 ## Install
 
+Requires Node 22 or newer and git. Dev-server control also needs tmux, and port
+detection reads `ss` and `/proc`, so it runs on Linux and WSL2.
+
 ```bash
-pnpm install     # requires Node 22 or newer
-pnpm build
-pnpm link --global    # provides the `repo-dash` command
+git clone https://github.com/chrisgen19/repo-dash-v1.git
+cd repo-dash-v1
+pnpm install      # installs dependencies and builds, through the prepare script
+pnpm add -g .     # puts `repo-dash` on your PATH
 ```
+
+Then run `repo-dash` from any directory, and `repo-dash --version` to confirm.
+
+`pnpm add -g .` registers a link to this checkout rather than a copy, so the
+global command always runs whatever was last built here. It replaces
+`pnpm link --global`, which pnpm 11 removed.
+
+### Updating
+
+```bash
+git pull
+pnpm install      # picks up dependency changes and rebuilds
+```
+
+Nothing needs reinstalling, since the global command is a link to this checkout.
+
+### Uninstalling
+
+```bash
+repo-dash dev stop-all                           # dev servers live in tmux and outlast the tool
+pnpm remove -g repo-dash
+rm -rf ~/.config/repo-dash ~/.cache/repo-dash    # optional: config and cache
+```
+
+Stop dev servers first: once the command is gone, `tmux kill-server` or
+`tmux kill-session -t <name>` is the only way to reach the `rd_` sessions.
 
 ## Configuration
 
@@ -66,6 +96,7 @@ dashboard on a fresh scan.
 ```bash
 repo-dash                  # interactive dashboard (falls back to a table when piped)
 repo-dash --refresh        # dashboard, bypassing the discovery cache
+repo-dash --version        # print the installed version
 repo-dash status           # branch, ahead/behind, dirty counts, worktree count
 repo-dash status --expand  # with linked worktrees nested under each repo
 repo-dash status --json    # machine-readable
