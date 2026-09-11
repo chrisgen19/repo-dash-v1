@@ -14,7 +14,7 @@ function run(
   args: string[],
   configHome: string,
   extraEnv: NodeJS.ProcessEnv = {},
-): Promise<{ stdout: string; code: number }> {
+): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
@@ -27,9 +27,9 @@ function run(
           ...extraEnv,
         },
       },
-      (err, stdout) => {
+      (err, stdout, stderr) => {
         const code = err === null ? 0 : ((err as NodeJS.ErrnoException & { code?: number }).code ?? 1);
-        resolve({ stdout, code: typeof code === 'number' ? code : 1 });
+        resolve({ stdout, stderr, code: typeof code === 'number' ? code : 1 });
       },
     );
   });
@@ -147,4 +147,17 @@ test('an unknown option is reported rather than treated as a command', async () 
   const home = await emptyConfigHome();
   const { code } = await run(['--bogus'], home);
   assert.equal(code, 1);
+});
+
+test('dev logs reports a bad --lines value before looking up the repository', async () => {
+  // Regression: a malformed value exited 0 with a different line count.
+  const home = await emptyConfigHome();
+  const bad = await run(['dev', 'logs', 'anything', '--lines', 'abc'], home);
+  assert.equal(bad.code, 1);
+  assert.match(bad.stderr, /--lines expects a positive integer/);
+
+  // A valid value gets past validation and fails only on the lookup.
+  const good = await run(['dev', 'logs', 'anything', '--lines', '5'], home);
+  assert.equal(good.code, 1);
+  assert.match(good.stderr, /no repository named "anything"/);
 });

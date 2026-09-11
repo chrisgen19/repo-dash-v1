@@ -19,7 +19,7 @@ import { readLog } from './proc/logs.js';
 import { canonicalPath } from './util/fs.js';
 import type { LoadResult, DevAction } from './ui/app.js';
 import type { Suspend } from './ui/editor.js';
-import { parseRootsAdd, splitCommand } from './util/args.js';
+import { parseLogsArgs, parseRootsAdd, splitCommand } from './util/args.js';
 
 // Piping into a pager or `head` closes stdout early. Without this, the
 // resulting EPIPE surfaces as an unhandled error and a stack trace.
@@ -348,16 +348,20 @@ async function cmdDev(rest: string[], refresh: boolean): Promise<number> {
       process.stderr.write('Usage: repo-dash dev logs <repo> [--lines N]\n');
       return 1;
     }
+    // Options are checked before the repository is resolved, so a typo in
+    // one is reported as such rather than hidden behind a lookup error.
+    const options = parseLogsArgs(rest.slice(2));
+    if (!options.ok) {
+      process.stderr.write(`${options.error}\nUsage: repo-dash dev logs <repo> [--lines N]\n`);
+      return 1;
+    }
     const found = await findRepoPath(cfg, target, refresh);
     if (typeof found !== 'string') {
       process.stderr.write(`${found.error}\n`);
       return 1;
     }
-    const index = rest.indexOf('--lines');
-    const requested = index >= 0 ? Number.parseInt(rest[index + 1] ?? '', 10) : Number.NaN;
-    const limit = Number.isInteger(requested) && requested > 0 ? requested : 200;
 
-    const view = await readLog(found, limit);
+    const view = await readLog(found, options.value.lines);
     if (view.lines.length === 0) {
       process.stderr.write(`${view.reason ?? 'no output'}\n`);
       return view.running ? 0 : 1;
