@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { basename } from 'node:path';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import type { RepoGroup } from '../git/snapshot.js';
-import { cellWidth, padCells, sanitizeLabel, truncate } from './format.js';
+import { cellWidth, isStaleFetch, padCells, sanitizeLabel, truncate } from './format.js';
 import { COLUMNS, buildRows, columnWidths, fitColumns, isSelectable, pruneHeadings } from './rows.js';
 import type { DevState } from '../proc/dev.js';
 import type { LogView } from '../proc/logs.js';
+import type { FetchResult } from '../git/fetch.js';
 import type { Row } from './rows.js';
 import type { Suspend } from './editor.js';
 
@@ -36,6 +37,11 @@ export interface AppProps {
   devAction?: (action: DevAction, path: string, suspend: Suspend) => Promise<string | null>;
   /** Reads recent dev-server output for the log pane. */
   readLog?: (path: string, limit: number) => Promise<LogView>;
+  /**
+   * Fetches repositories, reporting each completion. Failures come back in
+   * the results rather than as a rejection.
+   */
+  fetchRepos?: (paths: string[], onProgress: (done: number, total: number) => void) => Promise<FetchResult[]>;
 }
 
 type Filter = 'all' | 'dirty';
@@ -68,7 +74,7 @@ function terminalSize(stdout: { columns?: number; rows?: number }): { columns: n
   return { columns, rows };
 }
 
-export function App({ load, openInEditor, devAction, readLog }: AppProps): React.ReactElement {
+export function App({ load, openInEditor, devAction, readLog, fetchRepos }: AppProps): React.ReactElement {
   const { exit, suspendTerminal } = useApp();
   const { stdout } = useStdout();
 
@@ -87,6 +93,8 @@ export function App({ load, openInEditor, devAction, readLog }: AppProps): React
   const [status, setStatus] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
   const [log, setLog] = useState<LogView | null>(null);
+  // A ref, not state: a second keypress must see it before the next render.
+  const fetching = useRef(false);
 
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
@@ -241,6 +249,37 @@ export function App({ load, openInEditor, devAction, readLog }: AppProps): React
         })
         .catch((err: unknown) => {
           if (mounted.current) setStatus(`${action} failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      return;
+    }
+    if (input === 'f' || input === 'F') {
+      if (fetchRepos === undefined) return;
+      // One batch at a time: a second would compete with the first for git.
+      if (fetching.current) {
+        setStatus('a fetch is already running');
+        return;
+      }
+      const targets = input === 'F'
+        ? groups.map((g) => g.path)
+        : current === undefined || current.kind === 'heading' ? [] : [current.group.path];
+      if (targets.length === 0) return;
+
+      fetching.current = true;
+      setStatus(`fetching 0/${targets.length}...`);
+      void fetchRepos(targets, (done, total) => {
+        if (mounted.current) setStatus(`fetching ${done}/${total}...`);
+      })
+        .then((results) => {
+          if (!mounted.current) return;
+          setStatus(summarizeFetch(results));
+          // Ahead/behind and FETCHED both change; re-read without rescanning.
+          void reload(false);
+        })
+        .catch((err: unknown) => {
+          if (mounted.current) setStatus(`fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+        })
+        .finally(() => {
+          fetching.current = false;
         });
       return;
     }
@@ -432,6 +471,7 @@ function Header({ widths }: { widths: number[] }): React.ReactElement {
 
 const COLUMN_COLOR: Record<number, string | undefined> = {
   0: undefined, 1: 'green', 2: 'yellow', 3: undefined, 4: undefined, 5: undefined, 6: undefined,
+  7: undefined,
 };
 
 function RowLine({
@@ -455,10 +495,11 @@ function RowLine({
         const raw = i === 0 ? `${'  '.repeat(row.indent)}${row.cells[i] ?? ''}` : row.cells[i] ?? '';
         const text = padCells(truncate(raw, widths[i] as number), widths[i] as number);
         const running = i === 5 && (row.cells[5] ?? '').startsWith('\u25cf');
+        const stale = i === 7 && isStaleFetch(row.cells[7] ?? '');
         const color = selected
           ? undefined
-          : i === 3 && dirty ? 'red' : running ? 'green' : COLUMN_COLOR[i];
-        const dim = !selected && ((i === 0 && row.kind === 'worktree') || i === 6);
+          : i === 3 && dirty ? 'red' : running ? 'green' : stale ? 'yellow' : COLUMN_COLOR[i];
+        const dim = !selected && ((i === 0 && row.kind === 'worktree') || i === 6 || (i === 7 && !stale));
         return (
           <Text key={COLUMNS[i]} inverse={selected} color={color} dimColor={dim}>
             {text}{n < shown.length - 1 ? ' '.repeat(GAP) : ''}
@@ -479,9 +520,23 @@ const LOG_INTERVAL_MS = 1000;
 const LOG_MIN_HEIGHT = 4;
 const LOG_MAX_HEIGHT = 16;
 
+/** One status line for a batch of fetches, naming the first failure. */
+export function summarizeFetch(results: readonly FetchResult[]): string {
+  const failed = results.filter((r) => r.error !== null);
+  const ok = results.length - failed.length;
+  if (failed.length === 0) {
+    const only = results.length === 1 ? (results[0] as FetchResult) : undefined;
+    return only === undefined ? `fetched ${ok} repositories` : `fetched ${sanitizeLabel(basename(only.path))}`;
+  }
+  const first = failed[0] as FetchResult;
+  const more = failed.length > 1 ? ` (+${failed.length - 1} more)` : '';
+  const detail = `${sanitizeLabel(basename(first.path))}: ${sanitizeLabel(first.error ?? '')}`;
+  return `fetched ${ok}, ${failed.length} failed. ${detail}${more}`;
+}
+
 const HINTS = [
   '[j/k] move', '[enter] worktrees', '[d] dev', '[s] stop', '[x] restart',
-  '[l] logs', '[a] attach', '[/] search', '[D] dirty', '[o] editor',
+  '[l] logs', '[f/F] fetch', '[a] attach', '[/] search', '[D] dirty', '[o] editor',
   '[r] reload', '[q] quit',
 ];
 
@@ -530,7 +585,7 @@ function Footer(props: FooterProps): React.ReactElement {
       {searching ? (
         <Text>search: <Text color="cyan">{query}</Text><Text dimColor> (enter to keep, esc to clear)</Text></Text>
       ) : status !== null ? (
-        <Text color="magenta">{status}</Text>
+        <Text color="magenta">{truncate(status, width)}</Text>
       ) : (
         <Text dimColor>{fitHints(HINTS, width)}</Text>
       )}

@@ -8,6 +8,7 @@ import { discoverRepos } from './git/discover.js';
 import type { DiscoveredRepo } from './git/discover.js';
 import { clearCache, readCache, writeCache } from './cache.js';
 import { buildGroups } from './git/snapshot.js';
+import { fetchRepos } from './git/fetch.js';
 import type { RepoGroup } from './git/snapshot.js';
 import { renderTable } from './ui/table.js';
 import { basename } from 'node:path';
@@ -41,6 +42,7 @@ Usage
   repo-dash dev logs <repo>      Print recent output (--lines N, default 200)
   repo-dash dev stop-all         Stop every session this tool started
   repo-dash list [--json]        List discovered repositories
+  repo-dash fetch [<repo>]       Fetch every repository, or one (contacts remotes)
   repo-dash roots                Show configured scan roots
   repo-dash roots add <path> [--depth N]
   repo-dash roots rm <path>
@@ -113,6 +115,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdList(rest, refresh, hasFlag('--json'));
     case 'status':
       return cmdStatus(refresh, hasFlag('--expand'), hasFlag('--json'));
+    case 'fetch':
+      return cmdFetch(rest, refresh);
     case 'dev':
       return cmdDev(rest, refresh);
     case 'roots':
@@ -232,7 +236,10 @@ async function cmdDashboard(refresh: boolean): Promise<number> {
   const openInEditor = (path: string, suspend: Suspend): Promise<void> =>
     launchEditor(cfg.editor, path, suspend);
 
-  const instance = render(createElement(App, { load, openInEditor, devAction, readLog }));
+  const fetchAll = (paths: string[], onProgress: (done: number, total: number) => void) =>
+    fetchRepos(paths, cfg.concurrency, onProgress);
+
+  const instance = render(createElement(App, { load, openInEditor, devAction, readLog, fetchRepos: fetchAll }));
   await instance.waitUntilExit();
   return 0;
 }
@@ -326,6 +333,46 @@ async function findRepoPath(
   if (matches.length === 1) return matches[0] as string;
   if (matches.length === 0) return { error: `no repository named "${needle}"` };
   return { error: `"${needle}" matches ${matches.length} repositories; use a full path` };
+}
+
+/**
+ * Fetches every repository, or one. Exits 1 if any fetch fails, so a script
+ * can tell, and names each failure on stderr.
+ */
+async function cmdFetch(rest: string[], refresh: boolean): Promise<number> {
+  const cfg = await loadConfig();
+  const [target] = rest;
+
+  let paths: string[];
+  if (target === undefined) {
+    const { repos } = await getRepos(cfg, refresh);
+    paths = repos.length === 0 ? [] : (await buildGroups(repos, cfg)).map((g) => g.path);
+  } else {
+    const found = await findRepoPath(cfg, target, refresh);
+    if (typeof found !== 'string') {
+      process.stderr.write(`${found.error}\n`);
+      return 1;
+    }
+    paths = [found];
+  }
+
+  if (paths.length === 0) {
+    process.stdout.write(`No repositories found.\nEdit ${configPath()} or run: repo-dash roots add <path>\n`);
+    return 0;
+  }
+
+  // A live counter only makes sense on a terminal; a log should get lines.
+  const live = process.stderr.isTTY === true;
+  const results = await fetchRepos(paths, cfg.concurrency, (done, total) => {
+    if (live) process.stderr.write(`\rfetching ${done}/${total}`);
+  });
+  if (live) process.stderr.write(`\r${' '.repeat(24)}\r`);
+
+  const failed = results.filter((r) => r.error !== null);
+  for (const r of failed) process.stderr.write(`${basename(r.path)}: ${r.error ?? ''}\n`);
+  const tail = failed.length > 0 ? `, ${failed.length} failed` : '';
+  process.stdout.write(`Fetched ${plural(results.length - failed.length, 'repository', 'repositories')}${tail}.\n`);
+  return failed.length > 0 ? 1 : 0;
 }
 
 async function cmdDev(rest: string[], refresh: boolean): Promise<number> {

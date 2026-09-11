@@ -27,7 +27,8 @@ global command always runs whatever was last built here. It replaces
 
 ```bash
 git pull
-pnpm install      # picks up dependency changes and rebuilds
+pnpm install      # picks up dependency changes
+pnpm build        # pnpm install skips the build when dependencies are unchanged
 ```
 
 Nothing needs reinstalling, since the global command is a link to this checkout.
@@ -98,6 +99,7 @@ repo-dash                  # interactive dashboard (falls back to a table when p
 repo-dash --refresh        # dashboard, bypassing the discovery cache
 repo-dash --version        # print the installed version
 repo-dash status           # branch, ahead/behind, dirty counts, worktree count
+repo-dash fetch [<repo>]   # fetch every repository, or one; exits 1 if any fail
 repo-dash status --expand  # with linked worktrees nested under each repo
 repo-dash status --json    # machine-readable
 repo-dash list             # discovered repos, cached
@@ -122,12 +124,22 @@ app              main       ↑2 ↓5         3      1   2 hours ago
 | Column | Meaning |
 |---|---|
 | `AHEAD/BEHIND` | `↑n` unpushed, `↓n` unpulled, `·` level, `-` no upstream, `?` unreadable |
+| `FETCHED` | Time since the last fetch: `just now`, `3h ago`, `2d ago` (yellow from a day old), `never` if not fetched since cloning, `-` without an upstream |
 | `DIRTY` | Changed entries including untracked; a trailing `!` means merge conflicts |
 | `WT` | Linked worktrees, listed beneath the repo under `--expand` |
 
 **Ahead and behind are measured against the last fetch**, so they are only as
-fresh as the last time the remote was contacted. Nothing here touches the
-network. A repository whose main worktree lies outside every configured root
+fresh as the last time the remote was contacted. Nothing touches the network
+until you ask: `f` fetches the selected repository in the dashboard, `F` or
+`repo-dash fetch` fetches every one, and the `FETCHED` column shows how long
+ago each last did.
+
+Fetches never prompt. They run with no terminal attached and with
+`GIT_TERMINAL_PROMPT=0`, so a remote that wants a password or an SSH
+passphrase fails with git's message instead of taking over the dashboard.
+Credential helpers, such as `gh auth git-credential`, still work.
+
+A repository whose main worktree lies outside every configured root
 but which owns a worktree inside one is shown as `name (external)`.
 
 Linked worktrees are folded into their parent repository, so a worktree that
@@ -162,6 +174,7 @@ so `repo-dash | less` and `repo-dash > out.txt` still behave.
 | `d` | Start a dev server for the selected repository or worktree |
 | `s` / `x` | Stop it, or restart it |
 | `l` | Toggle a log pane showing the selected server's recent output |
+| `f` / `F` | Fetch the selected repository, or all of them; progress and any failure show in the footer |
 | `a` | Attach to its tmux session; detach with `Ctrl-b d` |
 | `o` | Open the selected row in `editor` |
 | `r` / `R` | Reload, or reload bypassing the discovery cache |
@@ -170,7 +183,7 @@ so `repo-dash | less` and `repo-dash > out.txt` still behave.
 Columns shrink to the terminal width, taking from `BRANCH` first, then `REPO`,
 then `LAST COMMIT`. Below roughly 56 columns the minimum widths cannot all fit,
 so columns are dropped instead of overflowing: `LAST COMMIT` goes first, then
-`WT`, `AHEAD/BEHIND`, `DIRTY` and `BRANCH`. `REPO` is never dropped. The
+`FETCHED`, `WT`, `AHEAD/BEHIND`, `DIRTY`, `DEV` and `BRANCH`. `REPO` is never dropped. The
 selection is tracked by path rather than position, so it stays put across a
 reload.
 

@@ -4,8 +4,8 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createElement } from 'react';
 import { render } from 'ink';
-import { App, fitHints } from './app.js';
-import type { LoadResult } from './app.js';
+import { App, fitHints, summarizeFetch } from './app.js';
+import type { AppProps, LoadResult } from './app.js';
 import type { RepoGroup, WorktreeView } from '../git/snapshot.js';
 import type { GitStatus } from '../git/status.js';
 
@@ -94,19 +94,16 @@ interface Harness {
   opened: string[];
 }
 
-/** Mounts with a custom log reader, for tests about timing. */
-async function mountWithLog(
+/** Mounts with any extra props, for tests about callbacks and timing. */
+async function mountCustom(
   groups: RepoGroup[],
-  read: (path: string) => Promise<string[]>,
+  extra: Omit<Partial<AppProps>, 'load' | 'openInEditor'>,
 ): Promise<Harness> {
   const stdout = new FakeStdout();
   const stdin = fakeStdin();
   const load = async (): Promise<LoadResult> => ({ groups, warnings: [], dev: new Map() });
-  const readLog = async (path: string): Promise<{ path: string; lines: string[]; running: boolean; reason: string | null }> =>
-    ({ path, lines: await read(path), running: true, reason: null });
-
   const instance = render(
-    createElement(App, { load, openInEditor: () => undefined, readLog }),
+    createElement(App, { load, openInEditor: () => undefined, ...extra }),
     { stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream, exitOnCtrlC: false, patchConsole: false },
   );
   const unmount = (): void => instance.unmount();
@@ -129,6 +126,16 @@ async function mountWithLog(
       if (at >= 0) openInstances.splice(at, 1);
     },
   };
+}
+
+/** Mounts with a custom log reader, for tests about timing. */
+async function mountWithLog(
+  groups: RepoGroup[],
+  read: (path: string) => Promise<string[]>,
+): Promise<Harness> {
+  return mountCustom(groups, {
+    readLog: async (path: string) => ({ path, lines: await read(path), running: true, reason: null }),
+  });
 }
 
 interface MountOptions {
@@ -509,4 +516,67 @@ test('a slow log read is never overlapped by the next poll', async () => {
   await new Promise((r) => setTimeout(r, 2800));
   assert.equal(peak, 1, `reads overlapped: ${peak} ran at once`);
   h.cleanup();
+});
+
+test('f fetches the selected repository and reports it', async () => {
+  const calls: string[][] = [];
+  const h = await mountCustom([group('alpha'), group('beta')], {
+    fetchRepos: async (paths, onProgress) => {
+      calls.push([...paths]);
+      onProgress(paths.length, paths.length);
+      return paths.map((path) => ({ path, error: null }));
+    },
+  });
+  await h.press('f');
+  await h.until(() => h.frame().includes('fetched alpha'), 'the fetch summary');
+  assert.deepEqual(calls, [['/r/alpha']]);
+  h.cleanup();
+});
+
+test('F fetches every repository and names a failure', async () => {
+  let seen: string[] = [];
+  const h = await mountCustom([group('alpha'), group('beta')], {
+    fetchRepos: async (paths) => {
+      seen = [...paths];
+      return paths.map((path) => ({ path, error: path.endsWith('beta') ? 'Authentication failed' : null }));
+    },
+  });
+  await h.press('F');
+  await h.until(() => h.frame().includes('1 failed'), 'the failure summary');
+  assert.deepEqual([...seen].sort(), ['/r/alpha', '/r/beta']);
+  assert.match(h.frame(), /beta: Authentication failed/);
+  h.cleanup();
+});
+
+test('a second fetch is refused while one is running', async () => {
+  let calls = 0;
+  const gate: { open: () => void } = { open: () => undefined };
+  const h = await mountCustom([group('alpha')], {
+    fetchRepos: async (paths) => {
+      calls++;
+      await new Promise<void>((resolve) => { gate.open = resolve; });
+      return paths.map((path) => ({ path, error: null }));
+    },
+  });
+  await h.press('f');
+  await h.until(() => h.frame().includes('fetching'), 'the fetch to start');
+  await h.press('F');
+  await h.until(() => h.frame().includes('already running'), 'the refusal');
+  assert.equal(calls, 1);
+  gate.open();
+  await h.until(() => h.frame().includes('fetched alpha'), 'the first fetch to finish');
+  h.cleanup();
+});
+
+test('summarizeFetch names the repository or the first failure', () => {
+  assert.equal(summarizeFetch([{ path: '/r/a', error: null }]), 'fetched a');
+  assert.equal(summarizeFetch([{ path: '/r/a', error: null }, { path: '/r/b', error: null }]), 'fetched 2 repositories');
+  assert.equal(
+    summarizeFetch([
+      { path: '/r/a', error: null },
+      { path: '/r/b', error: 'Authentication failed' },
+      { path: '/r/c', error: 'timed out' },
+    ]),
+    'fetched 1, 2 failed. b: Authentication failed (+1 more)',
+  );
 });

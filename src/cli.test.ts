@@ -207,7 +207,7 @@ test('help documents exactly the commands and options the CLI accepts', async ()
   const { stdout } = await run(['--help'], home);
 
   assert.deepEqual(usageCommands(stdout).sort(), [
-    'repo-dash', 'repo-dash status', 'repo-dash list',
+    'repo-dash', 'repo-dash status', 'repo-dash list', 'repo-dash fetch',
     'repo-dash dev', 'repo-dash dev start', 'repo-dash dev stop', 'repo-dash dev restart',
     'repo-dash dev logs', 'repo-dash dev stop-all',
     'repo-dash roots', 'repo-dash roots add', 'repo-dash roots rm',
@@ -226,4 +226,44 @@ test('help documents exactly the commands and options the CLI accepts', async ()
   assert.ok(handled.length >= 6, `expected the dispatcher's cases, found ${handled.length}`);
   const documented = new Set(usageCommands(stdout).map((c) => c.split(' ')[1]).filter(Boolean));
   for (const name of handled) assert.ok(documented.has(name), `"${name}" is handled but not in help`);
+});
+
+test('fetch with nothing configured says so', async () => {
+  const home = await emptyConfigHome();
+  const { stdout, code } = await run(['fetch'], home);
+  assert.equal(code, 0);
+  assert.match(stdout, /No repositories found/);
+});
+
+test('fetch of an unknown repository is an error', async () => {
+  const home = await emptyConfigHome();
+  const { stderr, code } = await run(['fetch', 'nosuch'], home);
+  assert.equal(code, 1);
+  assert.match(stderr, /no repository named "nosuch"/);
+});
+
+test('fetch updates what status reports', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'repo-dash-fetchcli-'));
+  const root = join(home, 'work');
+  const remote = join(home, 'remote.git');
+  const seed = join(home, 'seed');
+  await mkdir(root, { recursive: true });
+  await exec('git', ['init', '-q', '--bare', '-b', 'main', remote]);
+  await exec('git', ['clone', '-q', remote, seed]);
+  await exec('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'one'], { cwd: seed });
+  await exec('git', ['push', '-q', 'origin', 'HEAD:main'], { cwd: seed });
+  await exec('git', ['clone', '-q', remote, join(root, 'app')]);
+  await mkdir(join(home, 'repo-dash'), { recursive: true });
+  await writeFile(join(home, 'repo-dash', 'config.json'), JSON.stringify({ roots: [{ path: root }] }), 'utf8');
+
+  type Status = { groups: Array<{ fetchedAt: number | null }> };
+  const before = JSON.parse((await run(['status', '--json', '--refresh'], home)).stdout) as Status;
+  assert.equal(before.groups[0]?.fetchedAt, null, 'a fresh clone has not fetched');
+
+  const fetched = await run(['fetch'], home);
+  assert.equal(fetched.code, 0, fetched.stderr);
+  assert.match(fetched.stdout, /Fetched 1 repository\./);
+
+  const after = JSON.parse((await run(['status', '--json'], home)).stdout) as Status;
+  assert.equal(typeof after.groups[0]?.fetchedAt, 'number');
 });
