@@ -1,7 +1,23 @@
 import type { RepoGroup, WorktreeView } from '../git/snapshot.js';
+import type { DevState } from '../proc/dev.js';
 import { cellWidth, formatAheadBehind, formatBranch, formatDirty, sanitizeLabel } from './format.js';
 
-export const COLUMNS = ['REPO', 'BRANCH', 'AHEAD/BEHIND', 'DIRTY', 'WT', 'LAST COMMIT'] as const;
+export const COLUMNS = [
+  'REPO', 'BRANCH', 'AHEAD/BEHIND', 'DIRTY', 'WT', 'DEV', 'LAST COMMIT',
+] as const;
+
+/** Resolves the dev state for one working directory, if it is known. */
+export type DevLookup = (path: string) => DevState | undefined;
+
+/**
+ * "\u25cf :3000" when running with a known port, "\u25cf" when running with none
+ * detected yet, "\u25cb" when startable, "-" when there is nothing to run.
+ */
+export function formatDev(state: DevState | undefined): string {
+  if (state === undefined) return '';
+  if (state.running) return state.ports.length > 0 ? `\u25cf :${state.ports.join(',')}` : '\u25cf';
+  return state.available ? '\u25cb' : '-';
+}
 
 export interface Row {
   kind: 'group' | 'worktree' | 'heading';
@@ -13,7 +29,7 @@ export interface Row {
   worktree: WorktreeView | undefined;
 }
 
-function groupRow(group: RepoGroup): Row {
+function groupRow(group: RepoGroup, dev: DevLookup): Row {
   const safe = sanitizeLabel(group.name);
   const name = group.discovered ? safe : `${safe} (external)`;
   const suffix = group.kind === 'normal' ? '' : ` [${group.kind}]`;
@@ -27,6 +43,7 @@ function groupRow(group: RepoGroup): Row {
       formatAheadBehind(group.status),
       formatDirty(group.status),
       group.worktrees.length > 0 ? String(group.worktrees.length) : '\u00b7',
+      formatDev(dev(group.path)),
       group.lastCommit?.relative ?? '-',
     ],
     group,
@@ -34,7 +51,7 @@ function groupRow(group: RepoGroup): Row {
   };
 }
 
-function worktreeRow(group: RepoGroup, wt: WorktreeView): Row {
+function worktreeRow(group: RepoGroup, wt: WorktreeView, dev: DevLookup): Row {
   const flags: string[] = [];
   if (wt.locked) flags.push('locked');
   if (wt.prunable) flags.push('prunable');
@@ -50,6 +67,7 @@ function worktreeRow(group: RepoGroup, wt: WorktreeView): Row {
       formatAheadBehind(wt.status),
       formatDirty(wt.status),
       '',
+      formatDev(dev(wt.path)),
       wt.lastCommit?.relative ?? '-',
     ],
     group,
@@ -62,7 +80,7 @@ function headingRow(group: RepoGroup, label: string): Row {
     kind: 'heading',
     key: `heading:${label}`,
     indent: 0,
-    cells: [sanitizeLabel(label), '', '', '', '', ''],
+    cells: [sanitizeLabel(label), '', '', '', '', '', ''],
     group,
     worktree: undefined,
   };
@@ -90,6 +108,7 @@ export function pruneHeadings(rows: readonly Row[]): Row[] {
 export function buildRows(
   groups: readonly RepoGroup[],
   isExpanded: (group: RepoGroup) => boolean,
+  dev: DevLookup = () => undefined,
 ): Row[] {
   const labelled = groups.some((g) => g.rootLabel !== undefined);
   const ordered = labelled
@@ -108,9 +127,9 @@ export function buildRows(
       section = group.rootLabel;
       rows.push(headingRow(group, section ?? 'other'));
     }
-    rows.push(groupRow(group));
+    rows.push(groupRow(group, dev));
     if (!isExpanded(group)) continue;
-    for (const wt of group.worktrees) rows.push(worktreeRow(group, wt));
+    for (const wt of group.worktrees) rows.push(worktreeRow(group, wt, dev));
   }
   return rows;
 }
@@ -126,7 +145,7 @@ export function columnWidths(rows: readonly Row[]): number[] {
 }
 
 /** Columns dropped first when even the minimum widths will not fit. */
-const DROP_ORDER = [5, 4, 2, 3, 1]; // LAST COMMIT, WT, AHEAD/BEHIND, DIRTY, BRANCH
+const DROP_ORDER = [6, 4, 2, 3, 5, 1]; // LAST COMMIT, WT, AHEAD/BEHIND, DIRTY, DEV, BRANCH
 
 /**
  * Shrinks columns to fit `budget`, taking from the widest flexible column
@@ -139,8 +158,8 @@ const DROP_ORDER = [5, 4, 2, 3, 1]; // LAST COMMIT, WT, AHEAD/BEHIND, DIRTY, BRA
  */
 export function fitColumns(widths: readonly number[], budget: number, gap: number): number[] {
   const out = [...widths];
-  const flexible = [1, 0, 5]; // BRANCH, REPO, LAST COMMIT
-  const minimum: Record<number, number> = { 0: 12, 1: 8, 5: 7 };
+  const flexible = [1, 0, 6]; // BRANCH, REPO, LAST COMMIT
+  const minimum: Record<number, number> = { 0: 12, 1: 8, 6: 7 };
 
   const total = (): number => {
     const shown = out.filter((w) => w > 0);
@@ -168,7 +187,7 @@ export function fitColumns(widths: readonly number[], budget: number, gap: numbe
 
   // Dropping a column can free more than was needed, so hand the slack back,
   // most important column first, rather than leaving the row short.
-  for (const column of [0, 1, 5]) {
+  for (const column of [0, 1, 6]) {
     if ((out[column] as number) === 0) continue;
     const natural = widths[column] as number;
     while ((out[column] as number) < natural && total() < budget) {

@@ -9,8 +9,14 @@ import { clearCache, readCache, writeCache } from './cache.js';
 import { buildGroups } from './git/snapshot.js';
 import type { RepoGroup } from './git/snapshot.js';
 import { renderTable } from './ui/table.js';
+import { basename } from 'node:path';
 import { cellWidth, padCells } from './ui/format.js';
 import { launchEditor } from './ui/editor.js';
+import { attachDev, readDevStates, restartDev, startDev, stopAllDev, stopDev } from './proc/dev.js';
+import { listSessions, tmuxAvailable } from './proc/tmux.js';
+import { portsByPane } from './proc/ports.js';
+import { canonicalPath } from './util/fs.js';
+import type { LoadResult, DevAction } from './ui/app.js';
 import type { Suspend } from './ui/editor.js';
 import { parseRootsAdd, splitCommand } from './util/args.js';
 
@@ -26,6 +32,10 @@ const HELP = `repo-dash - multi-repo git dashboard
 Usage
   repo-dash                      Launch the interactive dashboard
   repo-dash status [--expand]    Branch, ahead/behind and dirty counts per repo
+  repo-dash dev                  List dev servers this tool is running
+  repo-dash dev start <repo>     Start a dev server
+  repo-dash dev stop <repo>      Stop one
+  repo-dash dev stop-all         Stop every session this tool started
   repo-dash list [--json]        List discovered repositories
   repo-dash roots                Show configured scan roots
   repo-dash roots add <path> [--depth N]
@@ -80,6 +90,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdList(rest, refresh, hasFlag('--json'));
     case 'status':
       return cmdStatus(refresh, hasFlag('--expand'), hasFlag('--json'));
+    case 'dev':
+      return cmdDev(rest, refresh);
     case 'roots':
       return cmdRoots(rest);
     case 'config':
@@ -168,18 +180,36 @@ async function cmdDashboard(refresh: boolean): Promise<number> {
   ]);
 
   let first = refresh;
-  const load = async (force: boolean): Promise<{ groups: RepoGroup[]; warnings: string[] }> => {
+  const load = async (force: boolean): Promise<LoadResult> => {
     const { repos, missingRoots } = await getRepos(cfg, force || first);
     first = false;
     const warnings = missingRoots.map((r) => `root not found, skipped: ${r}`);
-    if (repos.length === 0) return { groups: [], warnings };
-    return { groups: await buildGroups(repos, cfg), warnings };
+    if (repos.length === 0) return { groups: [], warnings, dev: new Map() };
+
+    const groups = await buildGroups(repos, cfg);
+    // Every working directory the dashboard can show, main checkouts included.
+    const paths = groups.flatMap((g) => [g.path, ...g.worktrees.map((w) => w.path)]);
+    const { tmux, states } = await readDevStates(paths, cfg);
+    if (!tmux) warnings.push('tmux not found, dev servers unavailable');
+    return { groups, warnings, dev: states };
+  };
+
+  const devAction = async (
+    action: DevAction,
+    path: string,
+    suspend: Suspend,
+  ): Promise<string | null> => {
+    if (action === 'start') return startDev(path, cfg);
+    if (action === 'stop') return stopDev(path);
+    if (action === 'restart') return restartDev(path, cfg);
+    // Attaching replaces the dashboard on screen until the user detaches.
+    return attachDev(path, suspend);
   };
 
   const openInEditor = (path: string, suspend: Suspend): Promise<void> =>
     launchEditor(cfg.editor, path, suspend);
 
-  const instance = render(createElement(App, { load, openInEditor }));
+  const instance = render(createElement(App, { load, openInEditor, devAction }));
   await instance.waitUntilExit();
   return 0;
 }
@@ -207,13 +237,16 @@ async function cmdStatus(refresh: boolean, expand: boolean, json: boolean): Prom
 
   const started = Date.now();
   const groups = await buildGroups(repos, cfg);
+  const paths = groups.flatMap((g) => [g.path, ...g.worktrees.map((w) => w.path)]);
+  const { states } = await readDevStates(paths, cfg);
 
   if (json) {
-    process.stdout.write(`${JSON.stringify({ groups, missingRoots }, null, 2)}\n`);
+    const dev = Object.fromEntries(states);
+    process.stdout.write(`${JSON.stringify({ groups, dev, missingRoots }, null, 2)}\n`);
     return 0;
   }
 
-  process.stdout.write(`${renderTable(groups, { expand })}\n`);
+  process.stdout.write(`${renderTable(groups, { expand, dev: (p) => states.get(p) })}\n`);
 
   const worktrees = groups.reduce((n, g) => n + g.worktrees.length, 0);
   // Counts every working tree with changes, main and linked alike, so the
@@ -221,11 +254,116 @@ async function cmdStatus(refresh: boolean, expand: boolean, json: boolean): Prom
   const dirty =
     groups.filter((g) => (g.status?.dirty ?? 0) > 0).length +
     groups.reduce((n, g) => n + g.worktrees.filter((w) => (w.status?.dirty ?? 0) > 0).length, 0);
+  const running = [...states.values()].filter((s) => s.running).length;
   process.stdout.write(
     `\n${plural(groups.length, 'repository', 'repositories')}, ` +
       `${plural(worktrees, 'linked worktree')}, ` +
-      `${plural(dirty, 'dirty working tree')}, read in ${Date.now() - started}ms\n`,
+      `${plural(dirty, 'dirty working tree')}, ${plural(running, 'dev server')} running, ` +
+      `read in ${Date.now() - started}ms\n`,
   );
+  return 0;
+}
+
+/**
+ * Every working directory the dashboard can act on: each repository's main
+ * checkout plus its linked worktrees. Discovery alone is not enough, because a
+ * main checkout outside the roots is still shown, and acted on, via a worktree
+ * that is inside them.
+ */
+async function dashboardPaths(cfg: Config, refresh: boolean): Promise<string[]> {
+  const { repos } = await getRepos(cfg, refresh);
+  if (repos.length === 0) return [];
+  const groups = await buildGroups(repos, cfg);
+  return groups.flatMap((g) => [g.path, ...g.worktrees.map((w) => w.path)]);
+}
+
+/**
+ * Resolves a repository argument to a path: an exact path in either form, or a
+ * unique basename. Running sessions are candidates too, so a server can be
+ * stopped even after its repository leaves the configured roots.
+ */
+async function findRepoPath(
+  cfg: Config,
+  needle: string,
+  refresh: boolean,
+): Promise<string | { error: string }> {
+  const candidates = new Set(await dashboardPaths(cfg, refresh));
+  for (const session of (await listSessions()).values()) {
+    if (session.path !== null) candidates.add(session.path);
+  }
+
+  const absolute = expandPath(needle);
+  const real = await canonicalPath(absolute);
+  for (const path of candidates) {
+    if (path === absolute || path === needle) return path;
+    if ((await canonicalPath(path)) === real) return path;
+  }
+
+  const matches = [...candidates].filter((path) => basename(path) === needle);
+  if (matches.length === 1) return matches[0] as string;
+  if (matches.length === 0) return { error: `no repository named "${needle}"` };
+  return { error: `"${needle}" matches ${matches.length} repositories; use a full path` };
+}
+
+async function cmdDev(rest: string[], refresh: boolean): Promise<number> {
+  const cfg = await loadConfig();
+  const [sub, target] = rest;
+
+  if (sub === undefined || sub === 'list') {
+    if (!(await tmuxAvailable())) {
+      process.stderr.write('tmux is not installed, so no dev servers can run\n');
+      return 1;
+    }
+    // Sessions record their own directory, so this lists everything running
+    // regardless of whether the repository is still inside a scan root.
+    const sessions = [...(await listSessions()).values()];
+    if (sessions.length === 0) {
+      process.stdout.write('No dev servers running.\n');
+      return 0;
+    }
+
+    const ports = await portsByPane(sessions.map((s) => s.panePid));
+    const label = (s: (typeof sessions)[number]): string => (s.path === null ? s.name : basename(s.path));
+    const width = Math.max(...sessions.map((s) => cellWidth(label(s))));
+    for (const session of sessions) {
+      const found = ports.get(session.panePid) ?? [];
+      const shown = found.length > 0 ? `:${found.join(',')}` : '(no port yet)';
+      process.stdout.write(`${padCells(label(session), width)}  ${shown}  ${session.path ?? session.name}\n`);
+    }
+    process.stdout.write(`\n${plural(sessions.length, 'dev server')} running\n`);
+    return 0;
+  }
+
+  if (sub === 'stop-all') {
+    const stopped = await stopAllDev();
+    process.stdout.write(`Stopped ${plural(stopped, 'dev server')}.\n`);
+    return 0;
+  }
+
+  if (sub !== 'start' && sub !== 'stop' && sub !== 'restart') {
+    process.stderr.write(`Unknown dev subcommand: ${sub}\n`);
+    return 1;
+  }
+  if (target === undefined) {
+    process.stderr.write(`Usage: repo-dash dev ${sub} <repo>\n`);
+    return 1;
+  }
+
+  const found = await findRepoPath(cfg, target, refresh);
+  if (typeof found !== 'string') {
+    process.stderr.write(`${found.error}\n`);
+    return 1;
+  }
+
+  const error =
+    sub === 'start' ? await startDev(found, cfg)
+      : sub === 'stop' ? await stopDev(found)
+        : await restartDev(found, cfg);
+  if (error !== null) {
+    process.stderr.write(`${error}\n`);
+    return 1;
+  }
+  process.stdout.write(`${sub === 'stop' ? 'Stopped' : 'Started'} ${basename(found)}\n`);
   return 0;
 }
 
