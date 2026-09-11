@@ -90,7 +90,7 @@ async function mount(
   stdout.rows = rows;
   const stdin = fakeStdin();
   const opened: string[] = [];
-  const load = async (): Promise<LoadResult> => ({ groups, warnings });
+  const load = async (): Promise<LoadResult> => ({ groups, warnings, dev: new Map() });
   const openInEditor = async (p: string): Promise<void> => {
     opened.push(p);
     if (onOpen) await onOpen(p);

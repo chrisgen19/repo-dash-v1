@@ -1,13 +1,9 @@
 import { execFile } from 'node:child_process';
 import { Semaphore } from '../util/semaphore.js';
+import { run } from '../util/run.js';
+import type { RunResult } from '../util/run.js';
 
-export interface GitResult {
-  stdout: string;
-  stderr: string;
-  /** 0 on success. Non-zero exits are returned, not thrown. */
-  code: number;
-  timedOut: boolean;
-}
+export type GitResult = RunResult;
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_BUFFER = 16 * 1024 * 1024;
@@ -91,25 +87,5 @@ export async function runGit(
   // Resolved before taking a permit: awaiting it while holding one would let a
   // slow bootstrap occupy every permit and stall all git reads.
   const env = await childEnv();
-
-  return gitLimiter.run(() => {
-    return new Promise<GitResult>((resolve) => {
-      execFile(
-        'git',
-        args as string[],
-        { cwd, timeout: timeoutMs, maxBuffer: MAX_BUFFER, windowsHide: true, env },
-        (err, stdout, stderr) => {
-          const killed =
-            err !== null && (err as NodeJS.ErrnoException & { killed?: boolean }).killed === true;
-          const raw = err === null ? 0 : (err as NodeJS.ErrnoException & { code?: number | string }).code;
-          resolve({
-            stdout,
-            stderr,
-            code: typeof raw === 'number' ? raw : err === null ? 0 : 1,
-            timedOut: killed,
-          });
-        },
-      );
-    });
-  });
+  return gitLimiter.run(() => run('git', args, { cwd, timeoutMs, env, maxBuffer: MAX_BUFFER }));
 }

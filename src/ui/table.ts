@@ -1,6 +1,7 @@
 import type { RepoGroup } from '../git/snapshot.js';
 import { padCells, truncate } from './format.js';
 import { COLUMNS, buildRows, columnWidths, fitColumns, pruneHeadings } from './rows.js';
+import type { DevLookup } from './rows.js';
 
 export { formatAheadBehind, formatBranch, formatDirty, sanitizeLabel } from './format.js';
 
@@ -9,13 +10,15 @@ export interface TableOptions {
   expand: boolean;
   /** Wrap to this width. Defaults to unlimited, which suits a pipe. */
   width?: number;
+  /** Dev-server state per working directory. Omitted leaves the column blank. */
+  dev?: DevLookup;
 }
 
 const GAP = 2;
 
 /** Renders the group list as an aligned plain-text table. */
 export function renderTable(groups: readonly RepoGroup[], options: TableOptions): string {
-  const rows = pruneHeadings(buildRows(groups, () => options.expand));
+  const rows = pruneHeadings(buildRows(groups, () => options.expand, options.dev));
   const natural = columnWidths(rows);
   const widths = options.width === undefined ? natural : fitColumns(natural, options.width, GAP);
 

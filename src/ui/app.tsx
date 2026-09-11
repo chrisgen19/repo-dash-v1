@@ -3,6 +3,7 @@ import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import type { RepoGroup } from '../git/snapshot.js';
 import { cellWidth, padCells, sanitizeLabel, truncate } from './format.js';
 import { COLUMNS, buildRows, columnWidths, fitColumns, isSelectable, pruneHeadings } from './rows.js';
+import type { DevState } from '../proc/dev.js';
 import type { Row } from './rows.js';
 import type { Suspend } from './editor.js';
 
@@ -11,7 +12,12 @@ const GAP = 2;
 export interface LoadResult {
   groups: RepoGroup[];
   warnings: string[];
+  /** Dev-server state per working directory, keyed by path. */
+  dev: Map<string, DevState>;
 }
+
+/** What the dashboard can ask of a dev server. */
+export type DevAction = 'start' | 'stop' | 'restart' | 'attach';
 
 export interface AppProps {
   /** Reads repositories. `refresh` bypasses the discovery cache. */
@@ -21,6 +27,11 @@ export interface AppProps {
    * hands the terminal over for an editor that draws in it.
    */
   openInEditor: (path: string, suspend: Suspend) => void | Promise<void>;
+  /**
+   * Acts on a dev server. Resolves with an error message, or null on success.
+   * `attach` hands over the terminal, so it receives the suspension too.
+   */
+  devAction?: (action: DevAction, path: string, suspend: Suspend) => Promise<string | null>;
 }
 
 type Filter = 'all' | 'dirty';
@@ -53,11 +64,12 @@ function terminalSize(stdout: { columns?: number; rows?: number }): { columns: n
   return { columns, rows };
 }
 
-export function App({ load, openInEditor }: AppProps): React.ReactElement {
+export function App({ load, openInEditor, devAction }: AppProps): React.ReactElement {
   const { exit, suspendTerminal } = useApp();
   const { stdout } = useStdout();
 
   const [groups, setGroups] = useState<RepoGroup[]>([]);
+  const [dev, setDev] = useState<Map<string, DevState>>(new Map());
   const [warnings, setWarnings] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -92,6 +104,7 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
         if (!mounted.current) return;
         setGroups(result.groups);
         setWarnings(result.warnings);
+        setDev(result.dev);
       } catch (err) {
         if (!mounted.current) return;
         setError(err instanceof Error ? err.message : String(err));
@@ -110,11 +123,12 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
   );
 
   const rows = useMemo(() => {
-    if (query === '') return pruneHeadings(buildRows(visible, (g) => expanded.has(g.path)));
+    const lookup = (path: string): DevState | undefined => dev.get(path);
+    if (query === '') return pruneHeadings(buildRows(visible, (g) => expanded.has(g.path), lookup));
 
     // Search looks inside collapsed repositories too, so a worktree-only name
     // is findable without expanding first; matches are revealed automatically.
-    const all = buildRows(visible, () => true);
+    const all = buildRows(visible, () => true, lookup);
     const keep = new Set<string>();
     for (const row of all) {
       if (!matches(row, query)) continue;
@@ -123,7 +137,7 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
       if (row.kind === 'worktree') keep.add(row.group.path);
     }
     return pruneHeadings(all.filter((r) => r.kind === 'heading' || keep.has(r.key)));
-  }, [visible, expanded, query]);
+  }, [visible, expanded, query, dev]);
 
   const index = Math.max(0, rows.findIndex((r) => r.key === selected));
   const current = rows[index];
@@ -206,6 +220,24 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
     if (input === 'D') { setFilter((f) => (f === 'dirty' ? 'all' : 'dirty')); return; }
     if (input === 'r') { void reload(false); return; }
     if (input === 'R') { void reload(true); return; }
+    if (input === 'd' || input === 's' || input === 'x' || input === 'a') {
+      if (devAction === undefined || current === undefined || current.kind === 'heading') return;
+      const path = current.worktree?.path ?? current.group.path;
+      const action: DevAction =
+        input === 'd' ? 'start' : input === 's' ? 'stop' : input === 'x' ? 'restart' : 'attach';
+      setStatus(`${action}\u2026 ${sanitizeLabel(path)}`);
+      void devAction(action, path, suspendTerminal)
+        .then((error) => {
+          if (!mounted.current) return;
+          setStatus(error === null ? `${action} ok: ${sanitizeLabel(path)}` : `${action} failed: ${error}`);
+          // Running state and ports change, so re-read without rescanning.
+          void reload(false);
+        })
+        .catch((err: unknown) => {
+          if (mounted.current) setStatus(`${action} failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      return;
+    }
     if (input === 'o') {
       if (current === undefined || current.kind === 'heading') return;
       const path = current.worktree?.path ?? current.group.path;
@@ -304,7 +336,7 @@ function Header({ widths }: { widths: number[] }): React.ReactElement {
 }
 
 const COLUMN_COLOR: Record<number, string | undefined> = {
-  0: undefined, 1: 'green', 2: 'yellow', 3: undefined, 4: undefined, 5: undefined,
+  0: undefined, 1: 'green', 2: 'yellow', 3: undefined, 4: undefined, 5: undefined, 6: undefined,
 };
 
 function RowLine({
@@ -327,8 +359,11 @@ function RowLine({
       {shown.map((i, n) => {
         const raw = i === 0 ? `${'  '.repeat(row.indent)}${row.cells[i] ?? ''}` : row.cells[i] ?? '';
         const text = padCells(truncate(raw, widths[i] as number), widths[i] as number);
-        const color = selected ? undefined : i === 3 && dirty ? 'red' : COLUMN_COLOR[i];
-        const dim = !selected && ((i === 0 && row.kind === 'worktree') || i === 5);
+        const running = i === 5 && (row.cells[5] ?? '').startsWith('\u25cf');
+        const color = selected
+          ? undefined
+          : i === 3 && dirty ? 'red' : running ? 'green' : COLUMN_COLOR[i];
+        const dim = !selected && ((i === 0 && row.kind === 'worktree') || i === 6);
         return (
           <Text key={COLUMNS[i]} inverse={selected} color={color} dimColor={dim}>
             {text}{n < shown.length - 1 ? ' '.repeat(GAP) : ''}
@@ -343,8 +378,8 @@ function RowLine({
 const MAX_WARNINGS = 3;
 
 const HINTS = [
-  '[j/k] move', '[enter] worktrees', '[E/C] expand all/none', '[/] search',
-  '[D] dirty', '[o] editor', '[r/R] reload', '[q] quit',
+  '[j/k] move', '[enter] worktrees', '[d] dev', '[s] stop', '[x] restart',
+  '[a] attach', '[/] search', '[D] dirty', '[o] editor', '[r] reload', '[q] quit',
 ];
 
 /** Drops hints from the end until the line fits, so it never wraps. */

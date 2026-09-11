@@ -1,10 +1,9 @@
 # repo-dash
 
-Multi-repo git dashboard for the terminal: status across every repository and
-expandable worktrees, with tmux-backed dev-server control planned.
+Multi-repo git dashboard for the terminal: status across every repository,
+expandable worktrees, and tmux-backed dev-server control.
 
-Status: phase 3 of 6 (config, discovery, cache, git status, worktrees, and the
-interactive dashboard). Dev-server control lands in phase 4.
+Status: phase 4 of 6. The log pane and polish are still to come.
 
 ## Install
 
@@ -129,6 +128,9 @@ so `repo-dash | less` and `repo-dash > out.txt` still behave.
 | `E` / `C` | Expand all, collapse all |
 | `/` | Search by name, branch or path, including inside collapsed repositories. `Enter` keeps it, `Esc` clears it |
 | `D` | Show only repositories with changes, worktrees included |
+| `d` | Start a dev server for the selected repository or worktree |
+| `s` / `x` | Stop it, or restart it |
+| `a` | Attach to its tmux session; detach with `Ctrl-b d` |
 | `o` | Open the selected row in `editor` |
 | `r` / `R` | Reload, or reload bypassing the discovery cache |
 | `q` | Quit |
@@ -165,6 +167,36 @@ names, emoji and combining accents line up and are never cut mid-glyph.
 takes it back when the editor exits. A windowed editor such as VS Code is
 detached instead, so quitting the dashboard does not close it.
 
+## Dev servers
+
+Each dev server runs in its own detached tmux session, named `rd_<repo>_<hash>`.
+That means they outlive the dashboard: quitting with `q` leaves them running,
+and `repo-dash dev stop-all` is the escape hatch.
+
+```bash
+repo-dash dev                # what is running, with ports
+repo-dash dev start <repo>   # by name, or by full path
+repo-dash dev stop <repo>
+repo-dash dev restart <repo>
+repo-dash dev stop-all
+```
+
+The command to run is worked out per repository: a `devCommand` override wins,
+otherwise the first of `dev`, `start` or `serve` in `package.json`, run through
+the package manager named in `packageManager` or implied by the lockfile.
+A repository with nothing to run shows `-` in the `DEV` column and says why.
+
+Ports are discovered rather than configured. `ss -ltnp` is read once, and each
+listening socket's process is walked up `/proc` to see whether it descends from
+a session's pane, so a server started as tmux → pnpm → node is still matched.
+
+| `DEV` | Meaning |
+|---|---|
+| `● :3000` | running, listening on that port |
+| `●` | running, no port detected yet |
+| `○` | not running, but startable |
+| `-` | nothing to run here |
+
 ## Layout
 
 ```
@@ -182,7 +214,12 @@ src/
   ui/rows.ts        shared row model and column fitting
   ui/format.ts      status formatting and label escaping
   ui/table.ts       plain-text table renderer
+  proc/dev.ts       dev-server state, start, stop, restart, attach
+  proc/pkg.ts       package manager and dev script detection
+  proc/tmux.ts      tmux sessions
+  proc/ports.ts     listening ports, matched through the process tree
   util/args.ts      argument parsing
+  util/run.ts       bounded command runner
   util/fs.ts        canonical path resolution
   util/semaphore.ts shared concurrency ceiling
   util/pool.ts      bounded-concurrency runner
