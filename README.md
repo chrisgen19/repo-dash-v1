@@ -3,8 +3,8 @@
 Multi-repo git dashboard for the terminal: status across every repository, expandable
 worktrees, and dev-server start/stop backed by tmux.
 
-Status: phase 2 of 6 (config, discovery, cache, git status and worktrees).
-The TUI lands in phase 3.
+Status: phase 3 of 6 (config, discovery, cache, git status, worktrees, and the
+interactive dashboard). Dev-server control lands in phase 4.
 
 ## Install
 
@@ -62,6 +62,7 @@ Example of a per-repo override:
 ## Commands
 
 ```bash
+repo-dash                  # interactive dashboard (falls back to a table when piped)
 repo-dash status           # branch, ahead/behind, dirty counts, worktree count
 repo-dash status --expand  # with linked worktrees nested under each repo
 repo-dash status --json    # machine-readable
@@ -110,6 +111,28 @@ expanded root paths and per-repo `hidden` overrides, so an edit takes effect on
 the next run rather than after the TTL. A cache that cannot be written produces
 a warning; the listing still succeeds.
 
+## Dashboard
+
+Running `repo-dash` with no arguments in a terminal opens the interactive
+dashboard. Piping or redirecting it prints the static `status` table instead,
+so `repo-dash | less` and `repo-dash > out.txt` still behave.
+
+| Key | Action |
+|---|---|
+| `j` / `k`, arrows | Move the selection |
+| `PgUp` / `PgDn`, `g` / `G` | Jump by ten, or to the ends |
+| `Enter`, `Space` | Expand or collapse a repository's worktrees |
+| `E` / `C` | Expand all, collapse all |
+| `/` | Search by name, branch or path. `Enter` keeps it, `Esc` clears it |
+| `D` | Show only repositories with changes, worktrees included |
+| `o` | Open the selected row in `editor` |
+| `r` / `R` | Reload, or reload bypassing the discovery cache |
+| `q` | Quit |
+
+Columns shrink to the terminal width, taking from `BRANCH` first, then `REPO`,
+then `LAST COMMIT`, so timestamps survive a narrow window. The selection is
+tracked by path rather than position, so it stays put across a reload.
+
 ## Layout
 
 ```
@@ -123,6 +146,9 @@ src/
   git/worktree.ts   worktree list --porcelain -z parser
   git/log.ts        last-commit reader
   git/snapshot.ts   groups worktrees with their parent repository
+  ui/app.tsx        interactive dashboard
+  ui/rows.ts        shared row model and column fitting
+  ui/format.ts      status formatting and label escaping
   ui/table.ts       plain-text table renderer
   util/args.ts      argument parsing
   util/fs.ts        canonical path resolution

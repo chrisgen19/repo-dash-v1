@@ -7,6 +7,7 @@ import { discoverRepos } from './git/discover.js';
 import type { DiscoveredRepo } from './git/discover.js';
 import { clearCache, readCache, writeCache } from './cache.js';
 import { buildGroups } from './git/snapshot.js';
+import type { RepoGroup } from './git/snapshot.js';
 import { renderTable } from './ui/table.js';
 import { parseRootsAdd, splitCommand } from './util/args.js';
 
@@ -20,7 +21,7 @@ process.stdout.on('error', (err: NodeJS.ErrnoException) => {
 const HELP = `repo-dash - multi-repo git dashboard
 
 Usage
-  repo-dash                      Launch the dashboard (available from phase 3)
+  repo-dash                      Launch the interactive dashboard
   repo-dash status [--expand]    Branch, ahead/behind and dirty counts per repo
   repo-dash list [--json]        List discovered repositories
   repo-dash roots                Show configured scan roots
@@ -47,6 +48,10 @@ async function main(argv: string[]): Promise<number> {
 
   switch (command) {
     case undefined:
+      // A pipe or redirect gets the static table; only a terminal gets the TUI.
+      return process.stdout.isTTY === true
+        ? cmdDashboard(argv.includes('--refresh'))
+        : cmdStatus(argv.includes('--refresh'), true, false);
     case 'list':
       return cmdList(rest, argv.includes('--refresh'), argv.includes('--json'));
     case 'status':
@@ -125,6 +130,38 @@ async function cmdList(_rest: string[], refresh: boolean, json: boolean): Promis
 
   const timing = cached ? 'from cache' : `scanned in ${elapsedMs}ms`;
   process.stdout.write(`\n${repos.length} repositories, ${timing}\n`);
+  return 0;
+}
+
+/** Launches the Ink dashboard. Ink is imported lazily so subcommands stay fast. */
+async function cmdDashboard(refresh: boolean): Promise<number> {
+  const cfg = await loadConfig();
+  const [{ render }, { App }, { createElement }] = await Promise.all([
+    import('ink'),
+    import('./ui/app.js'),
+    import('react'),
+  ]);
+
+  let first = refresh;
+  const load = async (force: boolean): Promise<{ groups: RepoGroup[]; warnings: string[] }> => {
+    const { repos, missingRoots } = await getRepos(cfg, force || first);
+    first = false;
+    const warnings = missingRoots.map((r) => `root not found, skipped: ${r}`);
+    if (repos.length === 0) return { groups: [], warnings };
+    return { groups: await buildGroups(repos, cfg), warnings };
+  };
+
+  const openInEditor = (path: string): void => {
+    const [exe, ...args] = splitCommand(cfg.editor);
+    if (exe === undefined) return;
+    // Detached so closing the dashboard does not take the editor with it.
+    const child = spawn(exe, [...args, path], { stdio: 'ignore', detached: true });
+    child.on('error', () => undefined);
+    child.unref();
+  };
+
+  const instance = render(createElement(App, { load, openInEditor }));
+  await instance.waitUntilExit();
   return 0;
 }
 
