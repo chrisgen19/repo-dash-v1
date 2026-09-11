@@ -2,6 +2,7 @@ import { basename } from 'node:path';
 import type { Config } from '../config.js';
 import { pool } from '../util/pool.js';
 import { canonicalPath } from '../util/fs.js';
+import { classifyRepoPath } from './discover.js';
 import type { DiscoveredRepo, RepoKind } from './discover.js';
 import { runGit, setGitConcurrency } from './exec.js';
 import { readLastCommit } from './log.js';
@@ -139,7 +140,11 @@ async function buildGroup(
 
   // git lists the main worktree first. Without it, treat the anchor as main.
   const main = worktrees[0];
-  const reportedMain = main?.path ?? anchor.repo.path;
+  const listed = main?.path ?? anchor.repo.path;
+  // Inside a submodule, and for a bare repository, git reports the git
+  // directory rather than a checkout. That path is not a working tree, so the
+  // anchor is the real main here.
+  const reportedMain = listed === commonDir ? anchor.repo.path : listed;
   const mainProbe = await find(reportedMain);
   const source = mainProbe ?? anchor;
   // Prefer the path the user configured, so a symlinked root stays recognizable.
@@ -168,7 +173,9 @@ async function buildGroup(
     name: basename(mainPath),
     path: mainPath,
     commonDir,
-    kind: mainProbe?.repo.kind ?? source.repo.kind,
+    // The anchor may be a linked worktree, so its kind must not stand in for
+    // the main checkout's. Read the reported main path instead.
+    kind: mainProbe?.repo.kind ?? (await classifyRepoPath(reportedMain)),
     rootLabel: source.repo.rootLabel,
     discovered: mainProbe !== undefined,
     status: mainProbe ? mainProbe.status : main ? await readStatus(mainPath, timeoutMs) : source.status,

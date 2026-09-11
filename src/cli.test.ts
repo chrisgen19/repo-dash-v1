@@ -10,12 +10,23 @@ import { fileURLToPath } from 'node:url';
 const CLI = fileURLToPath(new URL('./cli.js', import.meta.url));
 
 /** Runs the built CLI with an isolated config and cache directory. */
-function run(args: string[], configHome: string): Promise<{ stdout: string; code: number }> {
+function run(
+  args: string[],
+  configHome: string,
+  extraEnv: NodeJS.ProcessEnv = {},
+): Promise<{ stdout: string; code: number }> {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
       [CLI, ...args],
-      { env: { ...process.env, XDG_CONFIG_HOME: configHome, XDG_CACHE_HOME: join(configHome, 'cache') } },
+      {
+        env: {
+          ...process.env,
+          XDG_CONFIG_HOME: configHome,
+          XDG_CACHE_HOME: join(configHome, 'cache'),
+          ...extraEnv,
+        },
+      },
       (err, stdout) => {
         const code = err === null ? 0 : ((err as NodeJS.ErrnoException & { code?: number }).code ?? 1);
         resolve({ stdout, code: typeof code === 'number' ? code : 1 });
@@ -82,4 +93,24 @@ test('counts are singular when there is one of something', async () => {
   const home = await emptyConfigHome();
   const { stdout } = await run(['status', '--json', '--refresh'], home);
   assert.doesNotMatch(stdout, /1 repositories/);
+});
+
+test('an inherited GIT_DIR does not collapse unrelated repositories', async () => {
+  // Regression: spreading process.env let GIT_DIR override every cwd, so all
+  // repositories resolved to one git directory and all but one disappeared.
+  const home = await mkdtemp(join(tmpdir(), 'repo-dash-env-'));
+  const root = join(home, 'work');
+  for (const name of ['alpha', 'beta']) {
+    await mkdir(join(root, name), { recursive: true });
+    await exec('git', ['init', '-q', '-b', 'main'], { cwd: join(root, name) });
+    await exec('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'i'], { cwd: join(root, name) });
+  }
+  await mkdir(join(home, 'repo-dash'), { recursive: true });
+  await writeFile(join(home, 'repo-dash', 'config.json'), JSON.stringify({ roots: [{ path: root }] }), 'utf8');
+
+  const { stdout } = await run(['status', '--json', '--refresh'], home, {
+    GIT_DIR: join(root, 'alpha', '.git'),
+  });
+  const names = (JSON.parse(stdout) as { groups: Array<{ name: string }> }).groups.map((g) => g.name);
+  assert.deepEqual(names.sort(), ['alpha', 'beta']);
 });

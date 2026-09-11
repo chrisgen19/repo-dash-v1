@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, realpath, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFile } from 'node:child_process';
 import { runGit, gitConcurrency } from './exec.js';
 import { discoverRepos } from './discover.js';
 import { buildGroups } from './snapshot.js';
@@ -71,7 +72,14 @@ test('a submodule stays its own group', async () => {
   const groups = await groupsFor(root);
   const names = groups.map((g) => g.name).sort();
   assert.deepEqual(names, ['child', 'parent', 'sub']);
-  assert.equal(groups.find((g) => g.name === 'sub')?.kind, 'submodule');
+
+  // git reports the git directory rather than a checkout for a submodule, so
+  // these assert the checkout is used, not `.git/modules/sub`.
+  const sub = groups.find((g) => g.name === 'sub');
+  assert.equal(sub?.kind, 'submodule');
+  assert.equal(sub?.path, join(root, 'parent', 'sub'));
+  assert.equal(sub?.discovered, true);
+  assert.ok(!sub?.path.includes('.git'), 'the group path must be the checkout');
   assert.equal(groups.find((g) => g.name === 'parent')?.worktrees.length, 0);
 });
 
@@ -168,4 +176,67 @@ test('hiding is matched through a symlinked root', async () => {
   cfg.repos = { [join(root, 'real', 'app')]: { hidden: true } };
   const { repos } = await discoverRepos(cfg);
   assert.equal((await buildGroups(repos, cfg)).length, 0);
+});
+
+test('untracked files count even when git is told not to show them', async () => {
+  // Regression: status.showUntrackedFiles=no suppressed the ? records, so a
+  // repository holding only untracked files was reported clean.
+  const root = await sandbox();
+  await initRepo(join(root, 'app'));
+  await runGit(join(root, 'app'), ['config', 'status.showUntrackedFiles', 'no']);
+  await writeFile(join(root, 'app', 'untracked.txt'), 'x', 'utf8');
+
+  const groups = await groupsFor(root);
+  assert.equal(groups[0]?.status?.untracked, 1);
+  assert.equal(groups[0]?.status?.dirty, 1);
+});
+
+test('an external main checkout is not given its worktree kind', async () => {
+  // Regression: the anchor probe was a linked worktree, so the parent group
+  // rendered as "app (external) [worktree]" with kind "worktree" in JSON.
+  const root = await sandbox();
+  await mkdir(join(root, 'outside'), { recursive: true });
+  await mkdir(join(root, 'scanned'), { recursive: true });
+  await initRepo(join(root, 'outside', 'app'));
+  await runGit(join(root, 'outside', 'app'), [
+    'worktree', 'add', '-q', join(root, 'scanned', 'app-wt'), '-b', 'wtb',
+  ]);
+
+  const groups = await groupsFor(join(root, 'scanned'));
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0]?.discovered, false, 'the main checkout is outside the root');
+  assert.equal(groups[0]?.kind, 'normal', 'but it is still a normal checkout');
+  assert.equal(groups[0]?.worktrees.length, 1);
+});
+
+test('a signed commit parses to a bare hash', async (t) => {
+  // Regression: log.showSignature=true prepends verification text, which
+  // landed in the hash field and made it 261 characters.
+  const keygen = await runGit(process.cwd(), ['--version']);
+  if (keygen.code !== 0) return t.skip('git unavailable');
+
+  const root = await sandbox();
+  const repo = join(root, 'signed');
+  await initRepo(repo);
+
+  const key = join(root, 'key');
+  const gen = await new Promise<number>((resolve) => {
+    execFile('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key, '-C', 't'], (err) =>
+      resolve(err === null ? 0 : 1),
+    );
+  });
+  if (gen !== 0) return t.skip('ssh-keygen unavailable');
+
+  await runGit(repo, ['config', 'gpg.format', 'ssh']);
+  await runGit(repo, ['config', 'user.signingkey', `${key}.pub`]);
+  await runGit(repo, ['config', 'log.showSignature', 'true']);
+  const commit = await runGit(repo, [
+    '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qS', '--allow-empty', '-m', 'signed',
+  ]);
+  if (commit.code !== 0) return t.skip('commit signing unavailable');
+
+  const groups = await groupsFor(root);
+  const last = groups[0]?.lastCommit;
+  assert.equal(last?.hash.length, 40, `hash should be a bare oid, got ${last?.hash.length} chars`);
+  assert.equal(last?.subject, 'signed');
 });

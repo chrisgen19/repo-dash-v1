@@ -26,6 +26,52 @@ export function gitConcurrency(): number {
 }
 
 /**
+ * Used when git cannot be asked for its own list. Kept in sync with
+ * `git rev-parse --local-env-vars`.
+ */
+const FALLBACK_LOCAL_ENV_VARS = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CONFIG', 'GIT_CONFIG_PARAMETERS',
+  'GIT_CONFIG_COUNT', 'GIT_OBJECT_DIRECTORY', 'GIT_DIR', 'GIT_WORK_TREE',
+  'GIT_IMPLICIT_WORK_TREE', 'GIT_GRAFT_FILE', 'GIT_INDEX_FILE',
+  'GIT_NO_REPLACE_OBJECTS', 'GIT_REPLACE_REF_BASE', 'GIT_PREFIX',
+  'GIT_SHALLOW_FILE', 'GIT_COMMON_DIR',
+];
+
+let localEnvVars: Promise<string[]> | undefined;
+
+/**
+ * Asks git which variables bind a process to one repository. Running this
+ * without sanitizing is safe: the list is static and does not depend on the
+ * surrounding repository.
+ */
+function readLocalEnvVars(): Promise<string[]> {
+  localEnvVars ??= new Promise<string[]>((resolve) => {
+    execFile('git', ['rev-parse', '--local-env-vars'], { windowsHide: true }, (err, stdout) => {
+      if (err !== null) return resolve(FALLBACK_LOCAL_ENV_VARS);
+      const names = stdout.split('\n').map((n) => n.trim()).filter((n) => n !== '');
+      resolve(names.length > 0 ? names : FALLBACK_LOCAL_ENV_VARS);
+    });
+  });
+  return localEnvVars;
+}
+
+let childEnvironment: Promise<NodeJS.ProcessEnv> | undefined;
+
+/**
+ * An inherited GIT_DIR, GIT_WORK_TREE or GIT_INDEX_FILE overrides the `cwd`
+ * each call asks for, so unrelated repositories would resolve to one git
+ * directory and collapse into a single result. Drop them.
+ */
+async function childEnv(): Promise<NodeJS.ProcessEnv> {
+  childEnvironment ??= (async (): Promise<NodeJS.ProcessEnv> => {
+    const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
+    for (const name of await readLocalEnvVars()) delete env[name];
+    return env;
+  })();
+  return childEnvironment;
+}
+
+/**
  * Runs git in `cwd` and resolves with the result even when git fails, so one
  * broken repository cannot abort a scan over many.
  *
@@ -37,27 +83,25 @@ export function runGit(
   args: readonly string[],
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<GitResult> {
-  return gitLimiter.run(() => new Promise<GitResult>((resolve) => {
-    execFile(
-      'git',
-      args as string[],
-      {
-        cwd,
-        timeout: timeoutMs,
-        maxBuffer: MAX_BUFFER,
-        windowsHide: true,
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-      },
-      (err, stdout, stderr) => {
-        const killed = err !== null && (err as NodeJS.ErrnoException & { killed?: boolean }).killed === true;
-        const raw = err === null ? 0 : (err as NodeJS.ErrnoException & { code?: number | string }).code;
-        resolve({
-          stdout,
-          stderr,
-          code: typeof raw === 'number' ? raw : err === null ? 0 : 1,
-          timedOut: killed,
-        });
-      },
-    );
-  }));
+  return gitLimiter.run(async () => {
+    const env = await childEnv();
+    return new Promise<GitResult>((resolve) => {
+      execFile(
+        'git',
+        args as string[],
+        { cwd, timeout: timeoutMs, maxBuffer: MAX_BUFFER, windowsHide: true, env },
+        (err, stdout, stderr) => {
+          const killed =
+            err !== null && (err as NodeJS.ErrnoException & { killed?: boolean }).killed === true;
+          const raw = err === null ? 0 : (err as NodeJS.ErrnoException & { code?: number | string }).code;
+          resolve({
+            stdout,
+            stderr,
+            code: typeof raw === 'number' ? raw : err === null ? 0 : 1,
+            timedOut: killed,
+          });
+        },
+      );
+    });
+  });
 }

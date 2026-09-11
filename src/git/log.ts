@@ -13,7 +13,9 @@ export interface LastCommit {
 
 // NUL-delimited so a subject containing any character parses cleanly.
 const FORMAT = '%H%x00%h%x00%cr%x00%ct%x00%an%x00%s';
-export const LOG_ARGS = ['log', '-1', `--format=${FORMAT}`] as const;
+// --no-show-signature because log.showSignature=true prepends verification
+// text to stdout, which would land in the first field of the record.
+export const LOG_ARGS = ['log', '-1', '--no-show-signature', `--format=${FORMAT}`] as const;
 
 export function parseLastCommit(output: string): LastCommit | null {
   const parts = output.split('\0');

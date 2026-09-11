@@ -20,7 +20,11 @@ export interface GitStatus {
   dirty: number;
 }
 
-export const STATUS_ARGS = ['status', '--porcelain=v2', '--branch', '-z'] as const;
+// --untracked-files is explicit because status.showUntrackedFiles=no would
+// otherwise suppress the `?` records and report a dirty tree as clean.
+export const STATUS_ARGS = [
+  'status', '--porcelain=v2', '--branch', '--untracked-files=normal', '-z',
+] as const;
 
 function empty(): GitStatus {
   return {

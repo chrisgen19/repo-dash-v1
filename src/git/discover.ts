@@ -52,6 +52,15 @@ export async function classifyGitEntry(dir: string, gitIsFile: boolean): Promise
   }
 }
 
+/** Classifies a working directory that was not part of a discovery scan. */
+export async function classifyRepoPath(dir: string): Promise<RepoKind> {
+  try {
+    return await classifyGitEntry(dir, (await stat(join(dir, '.git'))).isFile());
+  } catch {
+    return 'normal';
+  }
+}
+
 export interface DiscoverResult {
   repos: DiscoveredRepo[];
   /** Roots that are configured but missing or unreadable on disk. */
