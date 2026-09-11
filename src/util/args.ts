@@ -20,11 +20,12 @@ export function parseRootsAdd(args: readonly string[]): ParseResult<RootsAddArgs
     if (arg === '--depth' || arg.startsWith('--depth=')) {
       const raw = arg.startsWith('--depth=') ? arg.slice('--depth='.length) : args[++i];
       if (raw === undefined || raw === '') return { ok: false, error: '--depth requires a number' };
-      const parsed = Number.parseInt(raw, 10);
-      if (!Number.isInteger(parsed) || parsed < 0) {
+      // parseInt would accept "2.5", "2junk" and "1e3" as 2, 2 and 1, silently
+      // storing a depth the user never asked for.
+      if (!/^\d+$/.test(raw.trim())) {
         return { ok: false, error: `--depth expects a non-negative integer, got "${raw}"` };
       }
-      maxDepth = parsed;
+      maxDepth = Number.parseInt(raw.trim(), 10);
       continue;
     }
 
@@ -35,4 +36,39 @@ export function parseRootsAdd(args: readonly string[]): ParseResult<RootsAddArgs
 
   if (path === undefined) return { ok: false, error: 'a path is required' };
   return { ok: true, value: maxDepth === undefined ? { path } : { path, maxDepth } };
+}
+
+/**
+ * Splits a configured command into an executable and its arguments, honouring
+ * quoted segments. `spawn` takes the executable alone, so a value such as
+ * `code --wait` or `"/opt/my editor/bin" -f` must be split first.
+ */
+export function splitCommand(command: string): string[] {
+  const tokens: string[] = [];
+  let current = '';
+  let started = false;
+  let quote: '"' | "'" | undefined;
+
+  for (const ch of command) {
+    if (quote !== undefined) {
+      if (ch === quote) quote = undefined;
+      else current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (started) tokens.push(current);
+      current = '';
+      started = false;
+      continue;
+    }
+    current += ch;
+    started = true;
+  }
+  if (started) tokens.push(current);
+  return tokens;
 }

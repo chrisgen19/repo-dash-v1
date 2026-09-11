@@ -39,6 +39,24 @@ test('a submodule is not reported as a worktree', async () => {
   assert.equal(await classifyGitEntry(broken, true), 'linked');
 });
 
+test('nested worktree and submodule markers resolve to the innermost kind', async () => {
+  // Regression: git writes .git/worktrees/<wt>/modules/<sub> for a submodule
+  // added inside a linked worktree, and .git/modules/<sub>/worktrees/<wt> for
+  // a worktree created inside a submodule. The last marker decides.
+  const root = await sandbox();
+  const cases: Array<[string, string, string]> = [
+    ['plain-wt', '/p/.git/worktrees/wt', 'worktree'],
+    ['sub-in-wt', '../../p/.git/worktrees/wt/modules/sub', 'submodule'],
+    ['plain-sub', '../.git/modules/sub', 'submodule'],
+    ['wt-of-sub', '/p/.git/modules/sub/worktrees/wt', 'worktree'],
+    ['unknown', '/somewhere/else', 'linked'],
+  ];
+  for (const [name, gitdir, expected] of cases) {
+    const dir = await pointerRepo(root, name, gitdir);
+    assert.equal(await classifyGitEntry(dir, true), expected, `${name} -> ${gitdir}`);
+  }
+});
+
 test('a .git directory is a normal repo', async () => {
   const root = await sandbox();
   const dir = join(root, 'plain');

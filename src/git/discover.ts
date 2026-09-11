@@ -27,7 +27,13 @@ export interface DiscoveredRepo {
 
 /**
  * A `.git` file alone cannot tell a linked worktree from a submodule: both are
- * pointer files. The gitdir target distinguishes them.
+ * pointer files. The gitdir target distinguishes them, but the two markers
+ * nest in either order, so the last one wins:
+ *
+ *   .git/worktrees/wt                  -> worktree
+ *   .git/worktrees/wt/modules/sub      -> submodule inside a worktree
+ *   .git/modules/sub                   -> submodule
+ *   .git/modules/sub/worktrees/wt      -> worktree of a submodule
  */
 export async function classifyGitEntry(dir: string, gitIsFile: boolean): Promise<RepoKind> {
   if (!gitIsFile) return 'normal';
@@ -37,9 +43,10 @@ export async function classifyGitEntry(dir: string, gitIsFile: boolean): Promise
     if (!match) return 'linked';
 
     const segments = (match[1] ?? '').trim().replace(/\\/g, '/').split('/');
-    if (segments.includes('worktrees')) return 'worktree';
-    if (segments.includes('modules')) return 'submodule';
-    return 'linked';
+    const worktreeAt = segments.lastIndexOf('worktrees');
+    const moduleAt = segments.lastIndexOf('modules');
+    if (worktreeAt === -1 && moduleAt === -1) return 'linked';
+    return worktreeAt > moduleAt ? 'worktree' : 'submodule';
   } catch {
     return 'linked';
   }

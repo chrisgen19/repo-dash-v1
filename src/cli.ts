@@ -6,7 +6,7 @@ import type { Config } from './config.js';
 import { discoverRepos } from './git/discover.js';
 import type { DiscoveredRepo } from './git/discover.js';
 import { clearCache, readCache, writeCache } from './cache.js';
-import { parseRootsAdd } from './util/args.js';
+import { parseRootsAdd, splitCommand } from './util/args.js';
 
 const HELP = `repo-dash - multi-repo git dashboard
 
@@ -56,7 +56,9 @@ async function main(argv: string[]): Promise<number> {
  * per-repo overrides are included because discovery filters on `hidden`.
  */
 function discoveryKey(cfg: Config): string {
-  const roots = cfg.roots.map((r) => [expandPath(r.path), r.maxDepth ?? null, r.enabled !== false]);
+  const roots = cfg.roots.map((r) => [
+    expandPath(r.path), r.maxDepth ?? null, r.enabled !== false, r.label ?? null,
+  ]);
   const material = JSON.stringify([
     roots, cfg.ignore, cfg.pruneDirs, cfg.maxDepth,
     cfg.includeHidden, cfg.scanInsideRepos, cfg.followSymlinks, cfg.repos,
@@ -172,8 +174,13 @@ async function cmdConfig(rest: string[]): Promise<number> {
     const cfg = await loadConfig();
     await saveConfig(cfg); // ensure the file exists before opening it
     const editor = process.env['VISUAL'] ?? process.env['EDITOR'] ?? cfg.editor;
+    const [exe, ...editorArgs] = splitCommand(editor);
+    if (exe === undefined) {
+      process.stderr.write('No editor configured. Set $VISUAL, $EDITOR, or "editor" in the config.\n');
+      return 1;
+    }
     return new Promise<number>((resolvePromise) => {
-      const child = spawn(editor, [configPath()], { stdio: 'inherit' });
+      const child = spawn(exe, [...editorArgs, configPath()], { stdio: 'inherit' });
       child.on('error', (err) => {
         process.stderr.write(`Could not launch "${editor}": ${err.message}\n`);
         resolvePromise(1);
