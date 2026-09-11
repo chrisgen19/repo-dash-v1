@@ -9,7 +9,7 @@ import { clearCache, readCache, writeCache } from './cache.js';
 import { buildGroups } from './git/snapshot.js';
 import type { RepoGroup } from './git/snapshot.js';
 import { renderTable } from './ui/table.js';
-import { parseRootsAdd, splitCommand } from './util/args.js';
+import { isTerminalEditor, parseRootsAdd, splitCommand } from './util/args.js';
 
 // Piping into a pager or `head` closes stdout early. Without this, the
 // resulting EPIPE surfaces as an unhandled error and a stack trace.
@@ -44,18 +44,23 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
-  const [command, ...rest] = argv;
+  // Options may precede the command, so `repo-dash --refresh` still selects the
+  // default dashboard instead of being read as an unknown command.
+  const flags = argv.filter((a) => a.startsWith('-'));
+  const positional = argv.filter((a) => !a.startsWith('-'));
+  const refresh = flags.includes('--refresh');
+  const [command, ...rest] = positional;
 
   switch (command) {
     case undefined:
       // A pipe or redirect gets the static table; only a terminal gets the TUI.
       return process.stdout.isTTY === true
-        ? cmdDashboard(argv.includes('--refresh'))
-        : cmdStatus(argv.includes('--refresh'), true, false);
+        ? cmdDashboard(refresh)
+        : cmdStatus(refresh, true, false);
     case 'list':
-      return cmdList(rest, argv.includes('--refresh'), argv.includes('--json'));
+      return cmdList(rest, refresh, flags.includes('--json'));
     case 'status':
-      return cmdStatus(argv.includes('--refresh'), argv.includes('--expand'), argv.includes('--json'));
+      return cmdStatus(refresh, flags.includes('--expand'), flags.includes('--json'));
     case 'roots':
       return cmdRoots(rest);
     case 'config':
@@ -151,17 +156,49 @@ async function cmdDashboard(refresh: boolean): Promise<number> {
     return { groups: await buildGroups(repos, cfg), warnings };
   };
 
-  const openInEditor = (path: string): void => {
+  let instance: { clear: () => void } | undefined;
+
+  /**
+   * Hands the terminal to a child and takes it back afterwards. A terminal
+   * editor spawned detached with no stdio gets no terminal at all and simply
+   * hangs in the background, so it has to run attached.
+   */
+  const runAttached = (exe: string, args: string[]): Promise<void> =>
+    new Promise((resolveRun) => {
+      instance?.clear();
+      const stdin = process.stdin;
+      const wasRaw = stdin.isTTY === true && stdin.isRaw === true;
+      if (wasRaw) stdin.setRawMode(false);
+      stdin.pause();
+
+      const child = spawn(exe, args, { stdio: 'inherit' });
+      const restore = (): void => {
+        stdin.resume();
+        if (wasRaw) stdin.setRawMode(true);
+        instance?.clear();
+        resolveRun();
+      };
+      child.on('error', restore);
+      child.on('exit', restore);
+    });
+
+  const openInEditor = async (path: string): Promise<void> => {
     const [exe, ...args] = splitCommand(cfg.editor);
     if (exe === undefined) return;
-    // Detached so closing the dashboard does not take the editor with it.
-    const child = spawn(exe, [...args, path], { stdio: 'ignore', detached: true });
+    const full = [...args, path];
+
+    if (isTerminalEditor(exe, args)) {
+      await runAttached(exe, full);
+      return;
+    }
+    // A GUI editor detaches, so closing the dashboard does not close it.
+    const child = spawn(exe, full, { stdio: 'ignore', detached: true });
     child.on('error', () => undefined);
     child.unref();
   };
 
-  const instance = render(createElement(App, { load, openInEditor }));
-  await instance.waitUntilExit();
+  instance = render(createElement(App, { load, openInEditor }));
+  await (instance as unknown as { waitUntilExit: () => Promise<void> }).waitUntilExit();
   return 0;
 }
 

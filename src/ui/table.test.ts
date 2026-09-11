@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { formatAheadBehind, formatBranch, formatDirty, renderTable, sanitizeLabel } from './table.js';
+import { fitColumns } from './rows.js';
 import type { GitStatus } from '../git/status.js';
 import type { RepoGroup } from '../git/snapshot.js';
 
@@ -86,4 +87,31 @@ test('a name containing a newline stays on one row', () => {
   assert.ok(!rendered.includes('\u001b'), 'no raw escape reaches the terminal');
   assert.ok(rendered.includes('two\\nlines'));
   assert.ok(rendered.includes('wt\\x1b[31m'));
+});
+
+test('columns always fit the budget, dropping some when very narrow', () => {
+  // Regression: the minimum widths totalled 56, so anything narrower
+  // overflowed, wrapped every row, and broke the viewport arithmetic.
+  const natural = [30, 20, 12, 5, 2, 14];
+  for (const budget of [10, 20, 30, 40, 50, 55, 56, 60, 80, 200]) {
+    const fitted = fitColumns(natural, budget, 2);
+    const shown = fitted.filter((w) => w > 0);
+    const total = shown.reduce((a, b) => a + b, 0) + 2 * Math.max(0, shown.length - 1);
+    assert.ok(total <= budget, `budget ${budget}: used ${total} (${JSON.stringify(fitted)})`);
+    assert.ok((fitted[0] as number) > 0, `budget ${budget}: REPO must never be dropped`);
+  }
+});
+
+test('a narrow table renders without wrapping', () => {
+  const group: RepoGroup = {
+    name: 'a-rather-long-repository-name', path: '/r/x', commonDir: '/r/x/.git', kind: 'normal',
+    rootLabel: undefined, discovered: true,
+    status: status({ branch: 'feature/some-very-long-branch-name' }), lastCommit: null, worktrees: [],
+  };
+  for (const width of [20, 40, 56, 80]) {
+    const rendered = renderTable([group], { expand: false, width });
+    for (const line of rendered.split('\n')) {
+      assert.ok(line.length <= width, `width ${width}: line of ${line.length} -> ${line}`);
+    }
+  }
 });

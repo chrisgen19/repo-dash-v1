@@ -16,7 +16,7 @@ export interface AppProps {
   /** Reads repositories. `refresh` bypasses the discovery cache. */
   load: (refresh: boolean) => Promise<LoadResult>;
   /** Invoked with a repository path when the open key is pressed. */
-  openInEditor: (path: string) => void;
+  openInEditor: (path: string) => void | Promise<void>;
 }
 
 type Filter = 'all' | 'dirty';
@@ -24,7 +24,9 @@ type Filter = 'all' | 'dirty';
 function matches(row: Row, query: string): boolean {
   if (query === '') return true;
   const needle = query.toLowerCase();
-  const haystack = [row.cells[0] ?? '', row.cells[1] ?? '', row.group.path].join(' ');
+  // A worktree row is matched on its own path, not its parent's.
+  const path = row.worktree?.path ?? row.group.path;
+  const haystack = [row.cells[0] ?? '', row.cells[1] ?? '', path].join(' ');
   return haystack.toLowerCase().includes(needle);
 }
 
@@ -89,13 +91,16 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
   );
 
   const rows = useMemo(() => {
-    const all = buildRows(visible, (g) => expanded.has(g.path));
-    if (query === '') return all;
-    // Keep a worktree's parent row so an indented match is not orphaned.
+    if (query === '') return buildRows(visible, (g) => expanded.has(g.path));
+
+    // Search looks inside collapsed repositories too, so a worktree-only name
+    // is findable without expanding first; matches are revealed automatically.
+    const all = buildRows(visible, () => true);
     const keep = new Set<string>();
     for (const row of all) {
       if (!matches(row, query)) continue;
       keep.add(row.key);
+      // Keep a worktree's parent so an indented match is not orphaned.
       if (row.kind === 'worktree') keep.add(row.group.path);
     }
     return all.filter((r) => keep.has(r.key));
@@ -162,8 +167,12 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
     if (input === 'o') {
       const path = current?.worktree?.path ?? current?.group.path;
       if (path === undefined) return;
-      openInEditor(path);
-      setStatus(`opened ${path}`);
+      setStatus(`opening ${path}`);
+      void Promise.resolve(openInEditor(path))
+        .then(() => { if (mounted.current) setStatus(`opened ${path}`); })
+        .catch((err: unknown) => {
+          if (mounted.current) setStatus(`could not open: ${err instanceof Error ? err.message : String(err)}`);
+        });
     }
   });
 
@@ -214,48 +223,49 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
   );
 }
 
+/** Indices of the columns wide enough to show, in display order. */
+function shownColumns(widths: readonly number[]): number[] {
+  return COLUMNS.map((_, i) => i).filter((i) => (widths[i] as number) > 0);
+}
+
 function Header({ widths }: { widths: number[] }): React.ReactElement {
+  const shown = shownColumns(widths);
   return (
     <Box>
-      {COLUMNS.map((label, i) => (
-        <Text key={label} bold color="cyan">
-          {pad(truncate(label, widths[i] as number), widths[i] as number)}
-          {i < COLUMNS.length - 1 ? ' '.repeat(GAP) : ''}
+      {shown.map((i, n) => (
+        <Text key={COLUMNS[i]} bold color="cyan">
+          {pad(truncate(COLUMNS[i] as string, widths[i] as number), widths[i] as number)}
+          {n < shown.length - 1 ? ' '.repeat(GAP) : ''}
         </Text>
       ))}
     </Box>
   );
 }
 
+const COLUMN_COLOR: Record<number, string | undefined> = {
+  0: undefined, 1: 'green', 2: 'yellow', 3: undefined, 4: undefined, 5: undefined,
+};
+
 function RowLine({
   row, widths, selected,
 }: { row: Row; widths: number[]; selected: boolean }): React.ReactElement {
-  const cells = row.cells.map((cell, i) => {
-    const text = i === 0 ? `${'  '.repeat(row.indent)}${cell}` : cell;
-    return pad(truncate(text, widths[i] as number), widths[i] as number);
-  });
-  const dirty = (row.cells[3] ?? '·') !== '·' && (row.cells[3] ?? '') !== '?';
+  const shown = shownColumns(widths);
+  const dirtyCell = row.cells[3] ?? '\u00b7';
+  const dirty = dirtyCell !== '\u00b7' && dirtyCell !== '?' && dirtyCell !== '';
 
   return (
     <Box>
-      <Text inverse={selected} dimColor={row.kind === 'worktree' && !selected}>
-        {cells[0]}{' '.repeat(GAP)}
-      </Text>
-      <Text inverse={selected} color={selected ? undefined : 'green'}>
-        {cells[1]}{' '.repeat(GAP)}
-      </Text>
-      <Text inverse={selected} color={selected ? undefined : 'yellow'}>
-        {cells[2]}{' '.repeat(GAP)}
-      </Text>
-      <Text inverse={selected} color={selected ? undefined : dirty ? 'red' : undefined}>
-        {cells[3]}{' '.repeat(GAP)}
-      </Text>
-      <Text inverse={selected}>
-        {cells[4]}{' '.repeat(GAP)}
-      </Text>
-      <Text inverse={selected} dimColor={!selected}>
-        {cells[5]}
-      </Text>
+      {shown.map((i, n) => {
+        const raw = i === 0 ? `${'  '.repeat(row.indent)}${row.cells[i] ?? ''}` : row.cells[i] ?? '';
+        const text = pad(truncate(raw, widths[i] as number), widths[i] as number);
+        const color = selected ? undefined : i === 3 && dirty ? 'red' : COLUMN_COLOR[i];
+        const dim = !selected && ((i === 0 && row.kind === 'worktree') || i === 5);
+        return (
+          <Text key={COLUMNS[i]} inverse={selected} color={color} dimColor={dim}>
+            {text}{n < shown.length - 1 ? ' '.repeat(GAP) : ''}
+          </Text>
+        );
+      })}
     </Box>
   );
 }

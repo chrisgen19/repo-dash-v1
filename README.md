@@ -9,7 +9,7 @@ interactive dashboard). Dev-server control lands in phase 4.
 ## Install
 
 ```bash
-pnpm install
+pnpm install     # requires Node 22 or newer
 pnpm build
 pnpm link --global    # provides the `repo-dash` command
 ```
@@ -61,8 +61,12 @@ Example of a per-repo override:
 
 ## Commands
 
+Options may come before the command, so `repo-dash --refresh` opens the
+dashboard on a fresh scan.
+
 ```bash
 repo-dash                  # interactive dashboard (falls back to a table when piped)
+repo-dash --refresh        # dashboard, bypassing the discovery cache
 repo-dash status           # branch, ahead/behind, dirty counts, worktree count
 repo-dash status --expand  # with linked worktrees nested under each repo
 repo-dash status --json    # machine-readable
@@ -123,15 +127,25 @@ so `repo-dash | less` and `repo-dash > out.txt` still behave.
 | `PgUp` / `PgDn`, `g` / `G` | Jump by ten, or to the ends |
 | `Enter`, `Space` | Expand or collapse a repository's worktrees |
 | `E` / `C` | Expand all, collapse all |
-| `/` | Search by name, branch or path. `Enter` keeps it, `Esc` clears it |
+| `/` | Search by name, branch or path, including inside collapsed repositories. `Enter` keeps it, `Esc` clears it |
 | `D` | Show only repositories with changes, worktrees included |
 | `o` | Open the selected row in `editor` |
 | `r` / `R` | Reload, or reload bypassing the discovery cache |
 | `q` | Quit |
 
 Columns shrink to the terminal width, taking from `BRANCH` first, then `REPO`,
-then `LAST COMMIT`, so timestamps survive a narrow window. The selection is
-tracked by path rather than position, so it stays put across a reload.
+then `LAST COMMIT`. Below roughly 56 columns the minimum widths cannot all fit,
+so columns are dropped instead of overflowing: `LAST COMMIT` goes first, then
+`WT`, `AHEAD/BEHIND`, `DIRTY` and `BRANCH`. `REPO` is never dropped. The
+selection is tracked by path rather than position, so it stays put across a
+reload.
+
+Searching looks inside collapsed repositories and matches a worktree on its own
+name, branch and path, revealing matches without expanding first.
+
+`o` hands the terminal to a terminal editor such as Vim, Nano or Helix and
+takes it back when the editor exits. A windowed editor such as VS Code is
+detached instead, so quitting the dashboard does not close it.
 
 ## Layout
 

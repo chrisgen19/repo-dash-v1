@@ -81,23 +81,56 @@ export function columnWidths(rows: readonly Row[]): number[] {
   );
 }
 
+/** Columns dropped first when even the minimum widths will not fit. */
+const DROP_ORDER = [5, 4, 2, 3, 1]; // LAST COMMIT, WT, AHEAD/BEHIND, DIRTY, BRANCH
+
 /**
  * Shrinks columns to fit `budget`, taking from the widest flexible column
  * first, so one long branch name cannot push the timestamps off screen.
+ *
+ * A width of `0` means the column is hidden. Below roughly 56 cells the
+ * minimum widths cannot all fit, so columns are dropped rather than allowed to
+ * overflow, which would wrap every row and break the viewport arithmetic.
+ * REPO is never dropped.
  */
 export function fitColumns(widths: readonly number[], budget: number, gap: number): number[] {
   const out = [...widths];
   const flexible = [1, 0, 5]; // BRANCH, REPO, LAST COMMIT
   const minimum: Record<number, number> = { 0: 12, 1: 8, 5: 7 };
 
-  const total = (): number => out.reduce((a, b) => a + b, 0) + gap * (out.length - 1);
-  while (total() > budget) {
-    const shrinkable = flexible
+  const total = (): number => {
+    const shown = out.filter((w) => w > 0);
+    return shown.reduce((a, b) => a + b, 0) + gap * Math.max(0, shown.length - 1);
+  };
+
+  const shrink = (): boolean => {
+    const target = flexible
       .filter((i) => (out[i] as number) > (minimum[i] as number))
-      .sort((a, b) => (out[b] as number) - (out[a] as number));
-    const target = shrinkable[0];
-    if (target === undefined) break;
+      .sort((a, b) => (out[b] as number) - (out[a] as number))[0];
+    if (target === undefined) return false;
     out[target] = (out[target] as number) - 1;
+    return true;
+  };
+
+  while (total() > budget && shrink());
+
+  for (const column of DROP_ORDER) {
+    if (total() <= budget) break;
+    out[column] = 0;
   }
+
+  // Nothing left to give: clamp the one remaining column to the budget.
+  if (total() > budget) out[0] = Math.max(1, budget);
+
+  // Dropping a column can free more than was needed, so hand the slack back,
+  // most important column first, rather than leaving the row short.
+  for (const column of [0, 1, 5]) {
+    if ((out[column] as number) === 0) continue;
+    const natural = widths[column] as number;
+    while ((out[column] as number) < natural && total() < budget) {
+      out[column] = (out[column] as number) + 1;
+    }
+  }
+  if (total() > budget) out[0] = (out[0] as number) - 1;
   return out;
 }

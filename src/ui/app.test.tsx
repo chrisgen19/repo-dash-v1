@@ -78,14 +78,21 @@ interface Harness {
   opened: string[];
 }
 
-async function mount(groups: RepoGroup[]): Promise<Harness> {
+async function mount(
+  groups: RepoGroup[],
+  onOpen?: (path: string) => Promise<unknown>,
+): Promise<Harness> {
   const stdout = new FakeStdout();
   const stdin = fakeStdin();
   const opened: string[] = [];
   const load = async (): Promise<LoadResult> => ({ groups, warnings: [] });
+  const openInEditor = async (p: string): Promise<void> => {
+    opened.push(p);
+    if (onOpen) await onOpen(p);
+  };
 
   const instance = render(
-    createElement(App, { load, openInEditor: (p: string) => opened.push(p) }),
+    createElement(App, { load, openInEditor }),
     { stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream, exitOnCtrlC: false, patchConsole: false },
   );
   const frame = (): string => stdout.last.replace(ANSI, '');
@@ -216,4 +223,43 @@ test('the hint line is trimmed to fit rather than wrapping', () => {
   for (const width of [1, 4, 9, 20, 40]) {
     assert.ok(fitHints(hints, width).length <= width, `width ${width}`);
   }
+});
+
+test('search finds a worktree inside a collapsed repository', async () => {
+  // Regression: rows were filtered by expansion before the query ran, so a
+  // worktree-only name was invisible until the parent was expanded.
+  const h = await mount([
+    group('alpha', { worktrees: [worktree('needle-wt')] }),
+    group('beta'),
+  ]);
+  assert.doesNotMatch(h.frame(), /needle-wt/, 'collapsed to begin with');
+  await h.press('/');
+  await h.press('needle');
+  await h.until(() => h.frame().includes('needle-wt'), 'the collapsed worktree to surface');
+  assert.doesNotMatch(h.frame(), /beta/);
+  h.cleanup();
+});
+
+test('search matches a worktree by its own path, not its parent', async () => {
+  // Regression: the haystack used group.path for worktree rows.
+  const h = await mount([
+    group('alpha', { worktrees: [worktree('wt', { path: '/elsewhere/zzz-unique' })] }),
+    group('beta'),
+  ]);
+  await h.press('/');
+  await h.press('zzz-unique');
+  // Wait on the filter taking effect, not on a row that was already visible.
+  await h.until(() => !h.frame().includes('beta'), 'the non-matching repository to drop out');
+  assert.match(h.frame(), /alpha/, 'the parent of the matching worktree stays');
+  h.cleanup();
+});
+
+test('the editor status reflects an async open', async () => {
+  const h = await mount([group('alpha')], async (p) => {
+    await new Promise((r) => setTimeout(r, 20));
+    return p;
+  });
+  await h.press('o');
+  await h.until(() => h.frame().includes('opened /r/alpha'), 'the completed open');
+  h.cleanup();
 });

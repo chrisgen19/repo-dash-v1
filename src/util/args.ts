@@ -72,3 +72,30 @@ export function splitCommand(command: string): string[] {
   if (started) tokens.push(current);
   return tokens;
 }
+
+/**
+ * Editors that draw in the terminal and therefore need it handed over, rather
+ * than GUI editors that detach and return immediately. Matched on the
+ * executable's base name, so an absolute path still resolves.
+ */
+const TERMINAL_EDITORS = new Set([
+  'vi', 'vim', 'nvim', 'vimx', 'nano', 'pico', 'emacs', 'emacsclient',
+  'micro', 'helix', 'hx', 'kak', 'ne', 'joe', 'mcedit', 'ed', 'nvi', 'jed',
+]);
+
+const WINDOWED_FLAGS = ['-nw', '--no-window-system', '-v'];
+
+/**
+ * True when the command draws in the terminal and must be handed the tty.
+ *
+ * The two mistakes are not symmetric. Treating a terminal editor as windowed
+ * leaves it running with no terminal, which is the failure this guards
+ * against; treating a windowed editor as a terminal one only pauses the
+ * dashboard until it exits. `emacs` therefore counts as a terminal editor
+ * unless nothing suggests otherwise, while `gvim` opens a window by default.
+ */
+export function isTerminalEditor(command: string, args: readonly string[] = []): boolean {
+  const base = (command.split('/').pop() ?? command).replace(/\.(exe|cmd|bat)$/i, '');
+  if (base === 'gvim') return args.some((a) => WINDOWED_FLAGS.includes(a));
+  return TERMINAL_EDITORS.has(base);
+}
