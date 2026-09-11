@@ -7,6 +7,7 @@ import {
   capturePane, killSession, listSessions, sessionName, startSession, tmuxAvailable,
 } from './tmux.js';
 import { readDevStates, startDev, stopDev, restartDev } from './dev.js';
+import { readLog } from './logs.js';
 import type { Config } from '../config.js';
 
 function config(overrides: Partial<Config> = {}): Config {
@@ -142,5 +143,30 @@ test('a path containing a tab survives the session listing', async (t) => {
     assert.equal((await listSessions()).get(name)?.path, weird);
   } finally {
     await killSession(name);
+  }
+});
+
+test('log output can be read back for a running server', async (t) => {
+  if (!(await tmuxAvailable())) return t.skip('tmux not installed');
+
+  const dir = await devFixture(39190);
+  await writeFile(
+    join(dir, 'server.js'),
+    "console.log('hello-from-dev');\nrequire('http').createServer((_, r) => r.end('ok')).listen(39190);\n",
+    'utf8',
+  );
+  try {
+    const before = await readLog(dir);
+    assert.equal(before.running, false);
+    assert.equal(before.reason, 'no dev server running');
+
+    await startDev(dir, config());
+    await settle(2000);
+
+    const after = await readLog(dir);
+    assert.equal(after.running, true);
+    assert.ok(after.lines.some((l) => l.includes('hello-from-dev')), after.lines.join(' | '));
+  } finally {
+    await killSession(sessionName(dir));
   }
 });

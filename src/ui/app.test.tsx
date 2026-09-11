@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
@@ -68,6 +68,13 @@ function fakeStdin(): PassThrough {
 
 const tick = (ms = 10): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+// A failing assertion skips its own cleanup, and the log pane's interval would
+// then hold the event loop open for the rest of the run.
+const openInstances: Array<() => void> = [];
+after(() => {
+  for (const unmount of openInstances.splice(0)) unmount();
+});
+
 interface Harness {
   /** The latest rendered content, with escape sequences removed. */
   frame: () => string;
@@ -78,12 +85,21 @@ interface Harness {
   opened: string[];
 }
 
+interface MountOptions {
+  onOpen?: (path: string) => Promise<unknown>;
+  columns?: number;
+  warnings?: string[];
+  rows?: number;
+  logLines?: string[];
+}
+
 async function mount(
   groups: RepoGroup[],
   onOpen?: (path: string) => Promise<unknown>,
   columns = 120,
   warnings: string[] = [],
   rows = 24,
+  logLines: string[] | null = null,
 ): Promise<Harness> {
   const stdout = new FakeStdout();
   stdout.columns = columns;
@@ -96,10 +112,18 @@ async function mount(
     if (onOpen) await onOpen(p);
   };
 
+  const readLog = logLines === null
+    ? undefined
+    : async (path: string): Promise<{ path: string; lines: string[]; running: boolean; reason: string | null }> =>
+        ({ path, lines: logLines, running: true, reason: null });
+
   const instance = render(
-    createElement(App, { load, openInEditor }),
+    createElement(App, { load, openInEditor, readLog }),
     { stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream, exitOnCtrlC: false, patchConsole: false },
   );
+  const unmount = (): void => instance.unmount();
+  openInstances.push(unmount);
+
   const frame = (): string => stdout.last.replace(ANSI, '');
 
   const until = async (predicate: () => boolean, label: string): Promise<void> => {
@@ -125,7 +149,11 @@ async function mount(
     opened,
     press: async (keys: string): Promise<void> => { stdin.write(keys); await tick(); },
     until,
-    cleanup: () => instance.unmount(),
+    cleanup: () => {
+      instance.unmount();
+      const at = openInstances.indexOf(unmount);
+      if (at >= 0) openInstances.splice(at, 1);
+    },
   };
 }
 
@@ -344,5 +372,46 @@ test('warnings shrink the viewport instead of overflowing the terminal', async (
   const lines = h.frame().split('\n').filter((l) => l !== '');
   assert.ok(lines.length <= 14, `frame is ${lines.length} lines in a 14-row terminal`);
   assert.match(h.frame(), /more warnings/, 'the extra warnings are summarised');
+  h.cleanup();
+});
+
+test('l toggles the log pane and shows the newest output', async () => {
+  const lines = Array.from({ length: 40 }, (_, i) => `log line ${i}`);
+  const h = await mount([group('alpha')], undefined, 120, [], 24, lines);
+  assert.doesNotMatch(h.frame(), /logs:/);
+
+  await h.press('l');
+  // Wait on the content, not the heading: the pane renders before the first read.
+  await h.until(() => h.frame().includes('log line 39'), 'the newest log line');
+  assert.match(h.frame(), /logs: alpha/);
+  assert.doesNotMatch(h.frame(), /log line 0\b/, 'older lines are scrolled off');
+
+  await h.press('l');
+  await h.until(() => !h.frame().includes('logs:'), 'the pane to close');
+  h.cleanup();
+});
+
+test('the open log pane does not push the frame past the terminal', async () => {
+  // The pane's top margin counts toward its height, as the footer's does.
+  const lines = Array.from({ length: 80 }, (_, i) => `log line ${i}`);
+  const many = Array.from({ length: 30 }, (_, i) => group(`repo-${String(i).padStart(2, '0')}`));
+  for (const rows of [12, 20, 30]) {
+    const h = await mount(many, undefined, 100, [], rows, lines);
+    await h.press('l');
+    await h.until(() => h.frame().includes('log line 79'), 'the pane content');
+    const used = h.frame().split('\n').filter((l) => l !== '').length;
+    assert.ok(used <= rows, `at ${rows} rows the frame used ${used}`);
+    h.cleanup();
+  }
+});
+
+test('the pane follows the selection', async () => {
+  const h = await mount(
+    [group('alpha'), group('beta')], undefined, 120, [], 24, ['output'],
+  );
+  await h.press('l');
+  await h.until(() => h.frame().includes('logs: alpha') && h.frame().includes('output'), 'the first repository');
+  await h.press('j');
+  await h.until(() => h.frame().includes('logs: beta'), 'the second repository');
   h.cleanup();
 });

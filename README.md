@@ -3,7 +3,7 @@
 Multi-repo git dashboard for the terminal: status across every repository,
 expandable worktrees, and tmux-backed dev-server control.
 
-Status: phase 4 of 6. The log pane and polish are still to come.
+Status: phase 5 of 6. Polish is still to come.
 
 ## Install
 
@@ -130,6 +130,7 @@ so `repo-dash | less` and `repo-dash > out.txt` still behave.
 | `D` | Show only repositories with changes, worktrees included |
 | `d` | Start a dev server for the selected repository or worktree |
 | `s` / `x` | Stop it, or restart it |
+| `l` | Toggle a log pane showing the selected server's recent output |
 | `a` | Attach to its tmux session; detach with `Ctrl-b d` |
 | `o` | Open the selected row in `editor` |
 | `r` / `R` | Reload, or reload bypassing the discovery cache |
@@ -178,6 +179,7 @@ repo-dash dev                # what is running, with ports
 repo-dash dev start <repo>   # by name, or by full path
 repo-dash dev stop <repo>
 repo-dash dev restart <repo>
+repo-dash dev logs <repo> [--lines N]
 repo-dash dev stop-all
 ```
 
@@ -202,6 +204,18 @@ a session's pane, so a server started as tmux → pnpm → node is still matched
 | `●` | running, no port detected yet |
 | `○` | not running, but startable |
 | `-` | nothing to run here |
+
+### Logs
+
+`l` opens a pane under the table showing the selected server's recent output,
+re-read once a second and following the selection as it moves. The pane takes
+at most half the space left after the table, and the same output is available
+as `repo-dash dev logs <repo>`.
+
+Output comes from `tmux capture-pane`, which strips escape sequences already.
+Carriage returns are collapsed to the last segment of each line, so progress
+bars show their final state rather than every step, and remaining control
+bytes are removed.
 
 ## Layout
 
