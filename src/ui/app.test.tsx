@@ -82,12 +82,15 @@ async function mount(
   groups: RepoGroup[],
   onOpen?: (path: string) => Promise<unknown>,
   columns = 120,
+  warnings: string[] = [],
+  rows = 24,
 ): Promise<Harness> {
   const stdout = new FakeStdout();
   stdout.columns = columns;
+  stdout.rows = rows;
   const stdin = fakeStdin();
   const opened: string[] = [];
-  const load = async (): Promise<LoadResult> => ({ groups, warnings: [] });
+  const load = async (): Promise<LoadResult> => ({ groups, warnings });
   const openInEditor = async (p: string): Promise<void> => {
     opened.push(p);
     if (onOpen) await onOpen(p);
@@ -317,5 +320,29 @@ test('the cursor skips heading rows', async () => {
   assert.match(h.frame(), /2\/2/, 'the last repository is the end');
   await h.press('k');
   await h.until(() => h.frame().includes('1/2'), 'back to the first repository');
+  h.cleanup();
+});
+
+test('a terminal reporting no size falls back to a usable default', async () => {
+  // Regression: `stdout.columns ?? 100` does not catch 0, which some pty setups
+  // report, and every column collapsed to a single ellipsis.
+  const h = await mount([group('alpha')], undefined, 0);
+  await h.until(() => h.frame().includes('alpha'), 'a readable row');
+  assert.match(h.frame(), /REPO\s+BRANCH/, 'the header is not collapsed');
+  h.cleanup();
+});
+
+test('warnings shrink the viewport instead of overflowing the terminal', async () => {
+  // Regression: the viewport reserved six fixed lines regardless of how many
+  // warning rows the footer drew, so the frame ran past the terminal.
+  const many = Array.from({ length: 8 }, (_, i) => `root not found, skipped: /missing/${i}`);
+  const h = await mount(
+    Array.from({ length: 30 }, (_, i) => group(`repo-${String(i).padStart(2, '0')}`)),
+    undefined, 120, many, 14,
+  );
+  await h.until(() => h.frame().includes('repo-00'), 'the first repository');
+  const lines = h.frame().split('\n').filter((l) => l !== '');
+  assert.ok(lines.length <= 14, `frame is ${lines.length} lines in a 14-row terminal`);
+  assert.match(h.frame(), /more warnings/, 'the extra warnings are summarised');
   h.cleanup();
 });

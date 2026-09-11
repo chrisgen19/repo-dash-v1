@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { formatAheadBehind, formatBranch, formatDirty, renderTable, sanitizeLabel } from './table.js';
 import { fitColumns, buildRows, pruneHeadings, isSelectable } from './rows.js';
+import { cellWidth, padCells, truncate } from './format.js';
 import type { GitStatus } from '../git/status.js';
 import type { RepoGroup } from '../git/snapshot.js';
 
@@ -145,4 +146,43 @@ test('a heading with nothing under it is dropped', () => {
   );
   const filtered = pruneHeadings(rows.filter((r) => r.cells[0] !== 'beta'));
   assert.deepEqual(filtered.map((r) => r.cells[0]), ['personal', 'alpha']);
+});
+
+test('width is measured in terminal cells, not code units', () => {
+  assert.equal(cellWidth('my-repo'), 7);
+  assert.equal(cellWidth('\u65e5\u672c\u8a9e'), 6, 'CJK is double width');
+  assert.equal(cellWidth('\u{1f680}'), 2, 'an emoji is double width');
+  assert.equal(cellWidth('e\u0301'), 1, 'a combining accent adds nothing');
+});
+
+test('truncation respects cells and never splits a glyph', () => {
+  // Regression: slicing by code unit produced a lone surrogate, and a CJK name
+  // cut to N code units rendered in 2N cells.
+  for (const [value, width] of [
+    ['\u65e5\u672c\u8a9e\u30d7\u30ed\u30b8\u30a7\u30af\u30c8', 8],
+    ['repo-\u{1f680}-x', 7],
+    ['\u{1f468}\u200d\u{1f469}\u200d\u{1f467}-family', 8],
+    ['plain-name', 4],
+  ] as Array<[string, number]>) {
+    const out = truncate(value, width);
+    assert.ok(cellWidth(out) <= width, `${JSON.stringify(out)} is ${cellWidth(out)} cells, budget ${width}`);
+    assert.ok(!/[\uD800-\uDBFF]$/.test(out.replace(/\u2026$/, '')), `split surrogate in ${JSON.stringify(out)}`);
+  }
+});
+
+test('padding counts cells so columns stay aligned', () => {
+  assert.equal(cellWidth(padCells('\u65e5\u672c\u8a9e', 10)), 10);
+  assert.equal(cellWidth(padCells('abc', 10)), 10);
+});
+
+test('a table of wide-character names still fits its width', () => {
+  const wide: RepoGroup = {
+    ...groupFixture('\u65e5\u672c\u8a9e\u30ea\u30dd\u30b8\u30c8\u30ea'),
+    status: status({ branch: '\u{1f680}\u{1f680}\u{1f680}-branch' }),
+  };
+  for (const width of [24, 40, 80]) {
+    for (const line of renderTable([wide], { expand: false, width }).split('\n')) {
+      assert.ok(cellWidth(line) <= width, `width ${width}: ${cellWidth(line)} cells -> ${line}`);
+    }
+  }
 });

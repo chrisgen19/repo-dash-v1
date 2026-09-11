@@ -1,5 +1,5 @@
 import type { RepoGroup } from '../git/snapshot.js';
-import { truncate } from './format.js';
+import { padCells, truncate } from './format.js';
 import { COLUMNS, buildRows, columnWidths, fitColumns, pruneHeadings } from './rows.js';
 
 export { formatAheadBehind, formatBranch, formatDirty, sanitizeLabel } from './format.js';
@@ -13,11 +13,6 @@ export interface TableOptions {
 
 const GAP = 2;
 
-function pad(value: string, width: number): string {
-  // Every glyph used here is single-width, so length is an adequate proxy.
-  return value + ' '.repeat(Math.max(0, width - value.length));
-}
-
 /** Renders the group list as an aligned plain-text table. */
 export function renderTable(groups: readonly RepoGroup[], options: TableOptions): string {
   const rows = pruneHeadings(buildRows(groups, () => options.expand));
@@ -26,7 +21,7 @@ export function renderTable(groups: readonly RepoGroup[], options: TableOptions)
 
   const shown = COLUMNS.map((_, i) => i).filter((i) => (widths[i] as number) > 0);
   const cell = (text: string, i: number): string =>
-    pad(truncate(text, widths[i] as number), widths[i] as number);
+    padCells(truncate(text, widths[i] as number), widths[i] as number);
 
   const lines = [shown.map((i) => cell(COLUMNS[i] as string, i)).join(' '.repeat(GAP)).trimEnd()];
   for (const row of rows) {

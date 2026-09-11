@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import type { RepoGroup } from '../git/snapshot.js';
-import { sanitizeLabel, truncate } from './format.js';
+import { cellWidth, padCells, sanitizeLabel, truncate } from './format.js';
 import { COLUMNS, buildRows, columnWidths, fitColumns, isSelectable, pruneHeadings } from './rows.js';
 import type { Row } from './rows.js';
 
@@ -35,6 +35,20 @@ function isDirty(group: RepoGroup): boolean {
   return group.worktrees.some((w) => (w.status?.dirty ?? 0) > 0);
 }
 
+const DEFAULT_COLUMNS = 80;
+const DEFAULT_ROWS = 24;
+
+/**
+ * A terminal that reports no size, or a size of zero, would otherwise collapse
+ * every column to a single ellipsis. `??` does not catch zero, which some pty
+ * setups and CI environments report.
+ */
+function terminalSize(stdout: { columns?: number; rows?: number }): { columns: number; rows: number } {
+  const columns = typeof stdout.columns === 'number' && stdout.columns > 0 ? stdout.columns : DEFAULT_COLUMNS;
+  const rows = typeof stdout.rows === 'number' && stdout.rows > 0 ? stdout.rows : DEFAULT_ROWS;
+  return { columns, rows };
+}
+
 export function App({ load, openInEditor }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
@@ -48,8 +62,8 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
-  const [width, setWidth] = useState(stdout.columns ?? 100);
-  const [height, setHeight] = useState(stdout.rows ?? 24);
+  const [width, setWidth] = useState(() => terminalSize(stdout).columns);
+  const [height, setHeight] = useState(() => terminalSize(stdout).rows);
   const [status, setStatus] = useState<string | null>(null);
 
   const mounted = useRef(true);
@@ -57,8 +71,9 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
 
   useEffect(() => {
     const onResize = (): void => {
-      setWidth(stdout.columns ?? 100);
-      setHeight(stdout.rows ?? 24);
+      const size = terminalSize(stdout);
+      setWidth(size.columns);
+      setHeight(size.rows);
     };
     stdout.on('resize', onResize);
     return () => { stdout.off('resize', onResize); };
@@ -213,8 +228,12 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
     ? 0
     : selectable.findIndex((r) => r.key === current.key) + 1;
 
-  // Two lines of chrome above, three below.
-  const viewport = Math.max(3, height - 6);
+  // The footer grows by one line per warning, so the viewport has to shrink to
+  // match or the frame runs past the terminal and scrolls the window away.
+  const shownWarnings = warnings.slice(0, MAX_WARNINGS);
+  const hiddenWarnings = warnings.length - shownWarnings.length;
+  const footerLines = 1 /* margin */ + shownWarnings.length + (hiddenWarnings > 0 ? 1 : 0) + 2;
+  const viewport = Math.max(1, height - 1 /* header */ - footerLines);
   const start = Math.min(Math.max(0, index - Math.floor(viewport / 2)), Math.max(0, rows.length - viewport));
   const windowed = rows.slice(start, start + viewport);
 
@@ -249,7 +268,8 @@ export function App({ load, openInEditor }: AppProps): React.ReactElement {
         query={query}
         searching={searching}
         status={status}
-        warnings={warnings}
+        warnings={shownWarnings}
+        hiddenWarnings={hiddenWarnings}
       />
     </Box>
   );
@@ -271,7 +291,7 @@ function Header({ widths }: { widths: number[] }): React.ReactElement {
     <Box>
       {shown.map((i, n) => (
         <Text key={COLUMNS[i]} bold color="cyan">
-          {pad(truncate(COLUMNS[i] as string, widths[i] as number), widths[i] as number)}
+          {padCells(truncate(COLUMNS[i] as string, widths[i] as number), widths[i] as number)}
           {n < shown.length - 1 ? ' '.repeat(GAP) : ''}
         </Text>
       ))}
@@ -302,7 +322,7 @@ function RowLine({
     <Box>
       {shown.map((i, n) => {
         const raw = i === 0 ? `${'  '.repeat(row.indent)}${row.cells[i] ?? ''}` : row.cells[i] ?? '';
-        const text = pad(truncate(raw, widths[i] as number), widths[i] as number);
+        const text = padCells(truncate(raw, widths[i] as number), widths[i] as number);
         const color = selected ? undefined : i === 3 && dirty ? 'red' : COLUMN_COLOR[i];
         const dim = !selected && ((i === 0 && row.kind === 'worktree') || i === 5);
         return (
@@ -315,6 +335,9 @@ function RowLine({
   );
 }
 
+/** More warnings than this are summarised, to bound the footer's height. */
+const MAX_WARNINGS = 3;
+
 const HINTS = [
   '[j/k] move', '[enter] worktrees', '[E/C] expand all/none', '[/] search',
   '[D] dirty', '[o] editor', '[r/R] reload', '[q] quit',
@@ -323,9 +346,9 @@ const HINTS = [
 /** Drops hints from the end until the line fits, so it never wraps. */
 export function fitHints(hints: readonly string[], width: number): string {
   const kept = [...hints];
-  while (kept.length > 1 && kept.join('  ').length > width) kept.pop();
+  while (kept.length > 1 && cellWidth(kept.join('  ')) > width) kept.pop();
   const line = kept.join('  ');
-  return line.length > width ? truncate(line, width) : line;
+  return cellWidth(line) > width ? truncate(line, width) : line;
 }
 
 interface FooterProps {
@@ -339,10 +362,13 @@ interface FooterProps {
   searching: boolean;
   status: string | null;
   warnings: string[];
+  hiddenWarnings: number;
 }
 
 function Footer(props: FooterProps): React.ReactElement {
-  const { width, total, position, groups, loading, filter, query, searching, status, warnings } = props;
+  const {
+    width, total, position, groups, loading, filter, query, searching, status, warnings, hiddenWarnings,
+  } = props;
   const bits = [`${position}/${total}`, `${groups} repos`];
   if (filter === 'dirty') bits.push('dirty only');
   if (loading) bits.push('reading…');
@@ -350,8 +376,11 @@ function Footer(props: FooterProps): React.ReactElement {
   return (
     <Box flexDirection="column" marginTop={1}>
       {warnings.map((w) => (
-        <Text key={w} color="yellow">warning: {w}</Text>
+        <Text key={w} color="yellow">{truncate(`warning: ${sanitizeLabel(w)}`, width)}</Text>
       ))}
+      {hiddenWarnings > 0 ? (
+        <Text color="yellow">{truncate(`and ${hiddenWarnings} more warnings`, width)}</Text>
+      ) : null}
       {searching ? (
         <Text>search: <Text color="cyan">{query}</Text><Text dimColor> (enter to keep, esc to clear)</Text></Text>
       ) : status !== null ? (
@@ -364,6 +393,3 @@ function Footer(props: FooterProps): React.ReactElement {
   );
 }
 
-function pad(value: string, width: number): string {
-  return value + ' '.repeat(Math.max(0, width - value.length));
-}

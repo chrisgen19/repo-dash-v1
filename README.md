@@ -156,6 +156,11 @@ for separating, say, personal work from client work:
 Headings are labels rather than entries, so the cursor skips them and the
 position counter reports only real repositories.
 
+The dashboard needs both stdin and stdout to be terminals. Redirecting either
+one prints the static table instead, so `repo-dash < /dev/null` and
+`repo-dash | less` both behave. Widths are measured in terminal cells, so CJK
+names, emoji and combining accents line up and are never cut mid-glyph.
+
 `o` hands the terminal to a terminal editor such as Vim, Nano or Helix and
 takes it back when the editor exits. A windowed editor such as VS Code is
 detached instead, so quitting the dashboard does not close it.

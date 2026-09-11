@@ -1,5 +1,5 @@
 import type { RepoGroup, WorktreeView } from '../git/snapshot.js';
-import { formatAheadBehind, formatBranch, formatDirty, sanitizeLabel } from './format.js';
+import { cellWidth, formatAheadBehind, formatBranch, formatDirty, sanitizeLabel } from './format.js';
 
 export const COLUMNS = ['REPO', 'BRANCH', 'AHEAD/BEHIND', 'DIRTY', 'WT', 'LAST COMMIT'] as const;
 

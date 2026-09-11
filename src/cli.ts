@@ -9,7 +9,8 @@ import { clearCache, readCache, writeCache } from './cache.js';
 import { buildGroups } from './git/snapshot.js';
 import type { RepoGroup } from './git/snapshot.js';
 import { renderTable } from './ui/table.js';
-import { isTerminalEditor, parseRootsAdd, splitCommand } from './util/args.js';
+import { launchEditor } from './ui/editor.js';
+import { parseRootsAdd, splitCommand } from './util/args.js';
 
 // Piping into a pager or `head` closes stdout early. Without this, the
 // resulting EPIPE surfaces as an unhandled error and a stack trace.
@@ -68,8 +69,9 @@ async function main(argv: string[]): Promise<number> {
 
   switch (command) {
     case undefined:
-      // A pipe or redirect gets the static table; only a terminal gets the TUI.
-      return process.stdout.isTTY === true
+      // Both streams must be terminals: Ink cannot put a redirected stdin into
+      // raw mode, so the dashboard would render without accepting any keys.
+      return process.stdout.isTTY === true && process.stdin.isTTY === true
         ? cmdDashboard(refresh)
         : cmdStatus(refresh, true, false);
     case 'list':
@@ -173,51 +175,21 @@ async function cmdDashboard(refresh: boolean): Promise<number> {
 
   let instance: { clear: () => void } | undefined;
 
-  /**
-   * Hands the terminal to a child and takes it back afterwards. A terminal
-   * editor spawned detached with no stdio gets no terminal at all and simply
-   * hangs in the background, so it has to run attached.
-   */
-  const runAttached = (exe: string, args: string[]): Promise<void> =>
-    new Promise((resolveRun) => {
-      instance?.clear();
-      const stdin = process.stdin;
-      const wasRaw = stdin.isTTY === true && stdin.isRaw === true;
-      if (wasRaw) stdin.setRawMode(false);
-      stdin.pause();
-
-      const child = spawn(exe, args, { stdio: 'inherit' });
-      const restore = (): void => {
-        stdin.resume();
-        if (wasRaw) stdin.setRawMode(true);
+  const openInEditor = (path: string): Promise<void> =>
+    launchEditor(cfg.editor, path, {
+      before: () => {
         instance?.clear();
-        resolveRun();
-      };
-      child.on('error', restore);
-      child.on('exit', restore);
+        const stdin = process.stdin;
+        if (stdin.isTTY === true && stdin.isRaw === true) stdin.setRawMode(false);
+        stdin.pause();
+      },
+      after: () => {
+        const stdin = process.stdin;
+        stdin.resume();
+        if (stdin.isTTY === true) stdin.setRawMode(true);
+        instance?.clear();
+      },
     });
-
-  const openInEditor = async (path: string): Promise<void> => {
-    const [exe, ...args] = splitCommand(cfg.editor);
-    if (exe === undefined) return;
-    const full = [...args, path];
-
-    if (isTerminalEditor(exe, args)) {
-      await runAttached(exe, full);
-      return;
-    }
-    // A windowed editor detaches, so closing the dashboard does not close it.
-    // The launch is still awaited far enough to report a missing executable
-    // rather than claiming success.
-    await new Promise<void>((resolveSpawn, rejectSpawn) => {
-      const child = spawn(exe, full, { stdio: 'ignore', detached: true });
-      child.once('error', rejectSpawn);
-      child.once('spawn', () => {
-        child.unref();
-        resolveSpawn();
-      });
-    });
-  };
 
   instance = render(createElement(App, { load, openInEditor }));
   await (instance as unknown as { waitUntilExit: () => Promise<void> }).waitUntilExit();
