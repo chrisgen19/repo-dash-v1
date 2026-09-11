@@ -1,0 +1,25 @@
+{
+  "name": "repo-dash",
+  "version": "0.1.0",
+  "description": "Multi-repo git dashboard with worktree expansion and dev-server control",
+  "type": "module",
+  "bin": {
+    "repo-dash": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/cli.js",
+    "test": "node --test \"dist/**/*.test.js\"",
+    "check": "tsc --noEmit && tsc && node --test \"dist/**/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  },
+  "packageManager": "pnpm@11.17.0"
+}
