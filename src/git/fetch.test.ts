@@ -1,0 +1,135 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, realpath } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { remoteEnv, runGit, runGitRemote } from './exec.js';
+import { fetchRepo, fetchRepos, readFetchedAt } from './fetch.js';
+import { readStatus } from './status.js';
+
+// Set before the first git call, which is when the child environment is
+// snapshotted, so the askpass test below has something real to strip. Each
+// test file runs in its own process, so this affects nothing else.
+process.env['DISPLAY'] = ':0';
+process.env['SSH_ASKPASS'] = '/usr/bin/ssh-askpass';
+process.env['GIT_ASKPASS'] = '/usr/bin/ssh-askpass';
+
+const ID = ['-c', 'user.email=t@t', '-c', 'user.name=t'];
+
+/** A bare remote, a clone of it under test, and a second clone that pushes. */
+async function remoteAndClone(): Promise<{ root: string; app: string; pusher: string }> {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'repo-dash-fetch-')));
+  const remote = join(root, 'remote.git');
+  const app = join(root, 'app');
+  const pusher = join(root, 'pusher');
+  await runGit(root, ['init', '-q', '--bare', '-b', 'main', remote]);
+  await runGit(root, ['clone', '-q', remote, pusher]);
+  await runGit(pusher, [...ID, 'commit', '-q', '--allow-empty', '-m', 'one']);
+  await runGit(pusher, ['push', '-q', 'origin', 'HEAD:main']);
+  await runGit(root, ['clone', '-q', remote, app]);
+  return { root, app, pusher };
+}
+
+test('a fetch brings in new remote commits and records when it ran', async () => {
+  const { app, pusher } = await remoteAndClone();
+  const commonDir = join(app, '.git');
+  assert.equal(await readFetchedAt(commonDir), null, 'a fresh clone has not fetched');
+
+  await runGit(pusher, [...ID, 'commit', '-q', '--allow-empty', '-m', 'two']);
+  await runGit(pusher, ['push', '-q', 'origin', 'HEAD:main']);
+  assert.equal((await readStatus(app))?.behind, 0, 'behind is stale until a fetch');
+
+  assert.deepEqual(await fetchRepo(app), { path: app, error: null });
+  assert.equal((await readStatus(app))?.behind, 1, 'the fetch revealed the new commit');
+  const at = await readFetchedAt(commonDir);
+  assert.ok(at !== null && Math.abs(Date.now() / 1000 - at) < 60, `fetchedAt was ${at}`);
+});
+
+test('a fetch run only from a linked worktree still counts', async () => {
+  // Git writes FETCH_HEAD under worktrees/<name>/ here and leaves the main
+  // one absent, so reading only the main file would report "never".
+  const { root, app } = await remoteAndClone();
+  const wt = join(root, 'app-wt');
+  await runGit(app, ['worktree', 'add', '-q', wt, '-b', 'wtb']);
+  assert.equal((await fetchRepo(wt)).error, null);
+  assert.notEqual(await readFetchedAt(join(app, '.git')), null);
+});
+
+test('a failing fetch is reported, not thrown', async () => {
+  const { app } = await remoteAndClone();
+  await runGit(app, ['remote', 'set-url', 'origin', join(app, 'no-such-remote.git')]);
+  const result = await fetchRepo(app);
+  assert.equal(result.path, app);
+  assert.ok(result.error !== null && result.error.length > 0, 'the reason is kept');
+});
+
+test('fetchRepos reports progress for each repository', async () => {
+  const a = await remoteAndClone();
+  const b = await remoteAndClone();
+  const seen: Array<[number, number]> = [];
+  const results = await fetchRepos([a.app, b.app], 2, (done, total) => seen.push([done, total]));
+  assert.deepEqual(results.map((r) => r.error), [null, null]);
+  assert.deepEqual(seen.map(([, total]) => total), [2, 2]);
+  assert.deepEqual(seen.map(([done]) => done).sort(), [1, 2]);
+});
+
+test('remote commands cannot prompt for credentials', async () => {
+  const env = await remoteEnv();
+  assert.equal(env['GIT_TERMINAL_PROMPT'], '0');
+  assert.equal(env['GIT_OPTIONAL_LOCKS'], '0', 'the usual isolation still applies');
+});
+
+test('remote commands cannot reach an askpass program either', async () => {
+  // Regression: GIT_TERMINAL_PROMPT only covers git's own terminal prompt.
+  // Without a tty, ssh runs SSH_ASKPASS instead, which on a desktop session
+  // opens a dialog and blocks the fetch rather than failing it.
+  const env = await remoteEnv();
+  assert.equal(env['SSH_ASKPASS_REQUIRE'], 'never');
+  assert.equal(env['SSH_ASKPASS'], undefined);
+  assert.equal(env['GIT_ASKPASS'], undefined);
+  assert.equal(env['DISPLAY'], undefined);
+});
+
+test('a configured core.askPass cannot run during a remote command', async () => {
+  // Regression: core.askPass is configuration, so clearing the environment did
+  // not reach it and git still ran it to ask for an https password. Reading the
+  // value back through the same path shows the override the fetch runs under.
+  const { app } = await remoteAndClone();
+  await runGit(app, ['config', 'core.askPass', '/usr/bin/ssh-askpass']);
+  assert.equal(
+    (await runGit(app, ['config', '--get', 'core.askPass'])).stdout.trim(),
+    '/usr/bin/ssh-askpass',
+    'the repository really has one configured',
+  );
+  const seen = await runGitRemote(app, ['config', '--get', 'core.askPass'], 5000);
+  assert.equal(seen.stdout.trim(), '', 'remote commands run with it cleared');
+});
+
+test('a fetch that failed for the tracked remote is not recorded', async () => {
+  // Regression: with several remotes, `fetch --all` can fail for the tracked
+  // one and still write entries from another, leaving FETCH_HEAD non-empty and
+  // freshly stamped. The tracked upstream was stale but read as just fetched.
+  const { app } = await remoteAndClone();
+  const commonDir = join(app, '.git');
+  const working = (await runGit(app, ['remote', 'get-url', 'origin'])).stdout.trim();
+  await runGit(app, ['remote', 'add', 'other', working]);
+  await runGit(app, ['remote', 'set-url', 'origin', join(app, 'gone.git')]);
+
+  assert.notEqual((await fetchRepo(app)).error, null, 'origin could not be fetched');
+  assert.notEqual(await readFetchedAt(commonDir, 'other/main'), null, 'the remote that worked counts');
+  assert.equal(await readFetchedAt(commonDir, 'origin/main'), null, 'the one that failed does not');
+});
+
+test('a failed fetch is not recorded as a fetch', async () => {
+  // Regression: git truncates FETCH_HEAD to nothing before it exits non-zero,
+  // so its mtime alone reported an unreachable remote as fetched "just now",
+  // which is the opposite of what the column is for.
+  const { app } = await remoteAndClone();
+  const commonDir = join(app, '.git');
+  assert.equal((await fetchRepo(app)).error, null);
+  assert.ok(await readFetchedAt(commonDir) !== null, 'the successful fetch counted');
+
+  await runGit(app, ['remote', 'set-url', 'origin', join(app, 'no-such-remote.git')]);
+  assert.notEqual((await fetchRepo(app)).error, null, 'the second fetch fails');
+  assert.equal(await readFetchedAt(commonDir), null, 'the failure is not a fetch');
+});

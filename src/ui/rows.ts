@@ -1,10 +1,22 @@
 import type { RepoGroup, WorktreeView } from '../git/snapshot.js';
 import type { DevState } from '../proc/dev.js';
-import { cellWidth, formatAheadBehind, formatBranch, formatDirty, sanitizeLabel } from './format.js';
+import {
+  cellWidth, formatAheadBehind, formatBranch, formatDirty, formatFetched, sanitizeLabel,
+} from './format.js';
 
 export const COLUMNS = [
-  'REPO', 'BRANCH', 'AHEAD/BEHIND', 'DIRTY', 'WT', 'DEV', 'LAST COMMIT',
+  'REPO', 'BRANCH', 'AHEAD/BEHIND', 'DIRTY', 'WT', 'DEV', 'LAST COMMIT', 'FETCHED',
 ] as const;
+
+/**
+ * Whether a fetch could change anything the group shows. A linked worktree may
+ * track a remote even when the main checkout's branch does not, and its
+ * ahead/behind is only as fresh as that fetch, so the group still has one.
+ */
+function groupHasUpstream(group: RepoGroup): boolean {
+  if ((group.status?.upstream ?? null) !== null) return true;
+  return group.worktrees.some((wt) => (wt.status?.upstream ?? null) !== null);
+}
 
 /** Resolves the dev state for one working directory, if it is known. */
 export type DevLookup = (path: string) => DevState | undefined;
@@ -45,6 +57,7 @@ function groupRow(group: RepoGroup, dev: DevLookup): Row {
       group.worktrees.length > 0 ? String(group.worktrees.length) : '\u00b7',
       formatDev(dev(group.path)),
       group.lastCommit?.relative ?? '-',
+      formatFetched(group.fetchedAt, groupHasUpstream(group)),
     ],
     group,
     worktree: undefined,
@@ -69,6 +82,7 @@ function worktreeRow(group: RepoGroup, wt: WorktreeView, dev: DevLookup): Row {
       '',
       formatDev(dev(wt.path)),
       wt.lastCommit?.relative ?? '-',
+      '',
     ],
     group,
     worktree: wt,
@@ -80,7 +94,7 @@ function headingRow(group: RepoGroup, label: string): Row {
     kind: 'heading',
     key: `heading:${label}`,
     indent: 0,
-    cells: [sanitizeLabel(label), '', '', '', '', '', ''],
+    cells: [sanitizeLabel(label), '', '', '', '', '', '', ''],
     group,
     worktree: undefined,
   };
@@ -138,14 +152,14 @@ export function buildRows(
 export function columnWidths(rows: readonly Row[]): number[] {
   return COLUMNS.map((header, i) =>
     Math.max(
-      header.length,
-      ...rows.map((r) => (r.cells[i] ?? '').length + (i === 0 ? r.indent * 2 : 0)),
+      cellWidth(header),
+      ...rows.map((r) => cellWidth(r.cells[i] ?? '') + (i === 0 ? r.indent * 2 : 0)),
     ),
   );
 }
 
 /** Columns dropped first when even the minimum widths will not fit. */
-const DROP_ORDER = [6, 4, 2, 3, 5, 1]; // LAST COMMIT, WT, AHEAD/BEHIND, DIRTY, DEV, BRANCH
+const DROP_ORDER = [6, 7, 4, 2, 3, 5, 1]; // LAST COMMIT, FETCHED, WT, AHEAD/BEHIND, DIRTY, DEV, BRANCH
 
 /**
  * Shrinks columns to fit `budget`, taking from the widest flexible column

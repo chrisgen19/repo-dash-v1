@@ -117,3 +117,29 @@ export function truncate(value: string, width: number): string {
 export function padCells(value: string, width: number): string {
   return value + ' '.repeat(Math.max(0, width - cellWidth(value)));
 }
+
+/**
+ * How long ago a repository last fetched: "just now", "5m ago", "3h ago",
+ * "2d ago". "never" when it has an upstream but no fetch on record, which
+ * includes a fresh clone, and "-" without an upstream, where no fetch would
+ * change anything shown.
+ */
+export function formatFetched(
+  fetchedAt: number | null | undefined,
+  hasUpstream: boolean,
+  now: number = Date.now(),
+): string {
+  if (!hasUpstream) return '-';
+  if (fetchedAt === null || fetchedAt === undefined) return 'never';
+  // A clock skewed into the future reads as now, never as a negative age.
+  const seconds = Math.max(0, Math.floor(now / 1000) - fetchedAt);
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86_400)}d ago`;
+}
+
+/** A day without fetching is when behind counts stop being trustworthy. */
+export function isStaleFetch(cell: string): boolean {
+  return cell === 'never' || /^\d+d ago$/.test(cell);
+}
