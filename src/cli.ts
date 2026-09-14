@@ -335,6 +335,8 @@ async function findRepoPath(
   return { error: `"${needle}" matches ${matches.length} repositories; use a full path` };
 }
 
+const FETCH_USAGE = 'Usage: repo-dash fetch [<repo>] [--refresh]\n';
+
 /**
  * Fetches every repository, or one. Exits 1 if any fetch fails, so a script
  * can tell, and names each failure on stderr.
@@ -342,8 +344,22 @@ async function findRepoPath(
 async function cmdFetch(rest: string[], refresh: boolean): Promise<number> {
   const cfg = await loadConfig();
   // Global flags may follow the command, as in `list --refresh`, so the first
-  // argument is not necessarily the repository name.
-  const target = rest.find((arg) => !arg.startsWith('-'));
+  // argument is not necessarily the repository name. Anything else is refused
+  // rather than skipped: a misspelled flag would otherwise leave no target and
+  // quietly fetch every repository over the network.
+  const badOption = rest.find(
+    (arg) => arg.startsWith('-') && !GLOBAL_FLAGS.has(arg.split('=')[0] as string),
+  );
+  if (badOption !== undefined) {
+    process.stderr.write(`Unknown option: ${badOption}\n\n${FETCH_USAGE}`);
+    return 1;
+  }
+  const targets = rest.filter((arg) => !arg.startsWith('-'));
+  if (targets.length > 1) {
+    process.stderr.write(`fetch takes at most one repository, got ${targets.length}\n\n${FETCH_USAGE}`);
+    return 1;
+  }
+  const target = targets[0];
 
   let paths: string[];
   if (target === undefined) {

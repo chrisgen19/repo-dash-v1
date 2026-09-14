@@ -8,6 +8,16 @@ export const COLUMNS = [
   'REPO', 'BRANCH', 'AHEAD/BEHIND', 'DIRTY', 'WT', 'DEV', 'LAST COMMIT', 'FETCHED',
 ] as const;
 
+/**
+ * Whether a fetch could change anything the group shows. A linked worktree may
+ * track a remote even when the main checkout's branch does not, and its
+ * ahead/behind is only as fresh as that fetch, so the group still has one.
+ */
+function groupHasUpstream(group: RepoGroup): boolean {
+  if ((group.status?.upstream ?? null) !== null) return true;
+  return group.worktrees.some((wt) => (wt.status?.upstream ?? null) !== null);
+}
+
 /** Resolves the dev state for one working directory, if it is known. */
 export type DevLookup = (path: string) => DevState | undefined;
 
@@ -47,7 +57,7 @@ function groupRow(group: RepoGroup, dev: DevLookup): Row {
       group.worktrees.length > 0 ? String(group.worktrees.length) : '\u00b7',
       formatDev(dev(group.path)),
       group.lastCommit?.relative ?? '-',
-      formatFetched(group.fetchedAt, (group.status?.upstream ?? null) !== null),
+      formatFetched(group.fetchedAt, groupHasUpstream(group)),
     ],
     group,
     worktree: undefined,

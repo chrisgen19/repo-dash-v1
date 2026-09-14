@@ -63,6 +63,7 @@ export function runDetached(file: string, args: readonly string[], options: RunO
     let timedOut = false;
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
+    let killTimer: NodeJS.Timeout | undefined;
 
     const child = spawn(file, args as string[], {
       ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
@@ -76,12 +77,16 @@ export function runDetached(file: string, args: readonly string[], options: RunO
       if (settled) return;
       settled = true;
       if (timer !== undefined) clearTimeout(timer);
+      if (killTimer !== undefined) clearTimeout(killTimer);
       resolve({ stdout, stderr, code, timedOut });
     };
 
     timer = setTimeout(() => {
       timedOut = true;
-      killGroup(child.pid);
+      killGroup(child.pid, 'SIGTERM');
+      // SIGTERM can be ignored, and then close never arrives and this promise
+      // never settles, holding one of the git permits for the rest of the run.
+      killTimer = setTimeout(() => killGroup(child.pid, 'SIGKILL'), KILL_GRACE_MS);
     }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
     child.stdout?.on('data', (chunk: Buffer) => {
@@ -98,11 +103,14 @@ export function runDetached(file: string, args: readonly string[], options: RunO
   });
 }
 
+/** How long a timed-out process group gets to exit before it is killed. */
+const KILL_GRACE_MS = 2_000;
+
 /** Signals every process in a detached child's group. */
-function killGroup(pid: number | undefined): void {
+function killGroup(pid: number | undefined, signal: NodeJS.Signals): void {
   if (pid === undefined) return;
   try {
-    process.kill(-pid, 'SIGTERM');
+    process.kill(-pid, signal);
   } catch {
     // Already gone.
   }

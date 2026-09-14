@@ -22,6 +22,24 @@ function status(overrides: Partial<GitStatus>): GitStatus {
   };
 }
 
+test('a tracking worktree gives the group a fetch age', () => {
+  // Regression: hasUpstream read only the main checkout, so a repository whose
+  // main branch is local-only rendered "-", meaning a fetch changes nothing,
+  // even though a linked worktree's behind count depends on that fetch.
+  const group: RepoGroup = {
+    ...groupFixture('app'),
+    status: status({ branch: 'scratch', upstream: null }),
+    fetchedAt: Math.floor(Date.now() / 1000) - 7200,
+    worktrees: [{
+      path: '/r/app-wt', name: 'app-wt', branch: 'main', detached: false,
+      locked: false, prunable: false, status: status({}), lastCommit: null,
+    }],
+  };
+  const fetched = (g: RepoGroup): string => buildRows([g], () => true, () => undefined)[0]?.cells[7] ?? '';
+  assert.equal(fetched(group), '2h ago');
+  assert.equal(fetched({ ...group, worktrees: [] }), '-', 'no upstream anywhere is still "-"');
+});
+
 test('ahead/behind distinguishes level, diverged and no upstream', () => {
   assert.equal(formatAheadBehind(status({})), '·');
   assert.equal(formatAheadBehind(status({ ahead: 2 })), '↑2');

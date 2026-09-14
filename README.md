@@ -116,9 +116,9 @@ unrecognized target shows `(linked)`.
 ### Reading the status table
 
 ```
-REPO             BRANCH     AHEAD/BEHIND  DIRTY  WT  LAST COMMIT
-app              main       ↑2 ↓5         3      1   2 hours ago
-  └ app-feature  feature/x  -             1          10 minutes ago
+REPO             BRANCH     AHEAD/BEHIND  DIRTY  WT  DEV  LAST COMMIT     FETCHED
+app              main       ↑2 ↓5         3      1   ○    2 hours ago     3h ago
+  └ app-feature  feature/x  -             1          -    10 minutes ago
 ```
 
 | Column | Meaning |

@@ -17,6 +17,15 @@ test('stdin is closed, so nothing can wait for input', async () => {
   assert.equal(result.stdout.trim(), 'got:');
 });
 
+test('a child that ignores SIGTERM is still killed, so the call always settles', async () => {
+  // Regression: the timeout sent only SIGTERM, so a process that ignores it
+  // left this promise pending for good, holding a git permit with it.
+  const started = Date.now();
+  const result = await runDetached('sh', ['-c', 'trap "" TERM; sleep 60'], { timeoutMs: 400 });
+  assert.equal(result.timedOut, true);
+  assert.ok(Date.now() - started < 10_000, `settled after ${Date.now() - started}ms`);
+});
+
 test('a timeout kills the whole process group', async () => {
   // The background sleep holds stdout open, so the result only arrives once
   // it is dead too: a timeout that killed just the shell would take 30 seconds.

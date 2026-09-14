@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { remoteEnv, runGit } from './exec.js';
+import { remoteEnv, runGit, runGitRemote } from './exec.js';
 import { fetchRepo, fetchRepos, readFetchedAt } from './fetch.js';
 import { readStatus } from './status.js';
 
@@ -88,6 +88,21 @@ test('remote commands cannot reach an askpass program either', async () => {
   assert.equal(env['SSH_ASKPASS'], undefined);
   assert.equal(env['GIT_ASKPASS'], undefined);
   assert.equal(env['DISPLAY'], undefined);
+});
+
+test('a configured core.askPass cannot run during a remote command', async () => {
+  // Regression: core.askPass is configuration, so clearing the environment did
+  // not reach it and git still ran it to ask for an https password. Reading the
+  // value back through the same path shows the override the fetch runs under.
+  const { app } = await remoteAndClone();
+  await runGit(app, ['config', 'core.askPass', '/usr/bin/ssh-askpass']);
+  assert.equal(
+    (await runGit(app, ['config', '--get', 'core.askPass'])).stdout.trim(),
+    '/usr/bin/ssh-askpass',
+    'the repository really has one configured',
+  );
+  const seen = await runGitRemote(app, ['config', '--get', 'core.askPass'], 5000);
+  assert.equal(seen.stdout.trim(), '', 'remote commands run with it cleared');
 });
 
 test('a failed fetch is not recorded as a fetch', async () => {

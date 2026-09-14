@@ -244,6 +244,22 @@ test('fetch --refresh is a flag, not a repository name', async () => {
   assert.match(stdout, /No repositories found/);
 });
 
+test('a misspelled fetch flag is refused, not taken as "fetch everything"', async () => {
+  // Regression: unknown options fell through to "no target", so a typo such as
+  // --refesh silently fetched every repository over the network.
+  const home = await emptyConfigHome();
+  const { stderr, code } = await run(['fetch', '--refesh'], home);
+  assert.equal(code, 1);
+  assert.match(stderr, /Unknown option: --refesh/);
+});
+
+test('fetch refuses more than one repository rather than ignoring the rest', async () => {
+  const home = await emptyConfigHome();
+  const { stderr, code } = await run(['fetch', 'alpha', 'beta'], home);
+  assert.equal(code, 1);
+  assert.match(stderr, /at most one repository/);
+});
+
 test('fetch of an unknown repository is an error', async () => {
   const home = await emptyConfigHome();
   const { stderr, code } = await run(['fetch', 'nosuch'], home);
