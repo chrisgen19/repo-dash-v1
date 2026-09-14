@@ -123,11 +123,15 @@ export async function runGitRemote(
   cwd: string,
   args: readonly string[],
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<GitResult> {
   const env = await remoteEnv();
   // core.askPass is configuration, so clearing the environment does not reach
   // it and git would still run it for an https password. An empty value reads
   // as unset, which leaves the prompt disabled rather than redirected.
   const argv = ['-c', 'core.askPass=', ...args];
-  return gitLimiter.run(() => runDetached('git', argv, { cwd, timeoutMs, env, maxBuffer: MAX_BUFFER }));
+  return gitLimiter.run(() => runDetached('git', argv, {
+    cwd, timeoutMs, env, maxBuffer: MAX_BUFFER,
+    ...(signal === undefined ? {} : { signal }),
+  }));
 }

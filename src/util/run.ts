@@ -13,6 +13,8 @@ export interface RunOptions {
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
   maxBuffer?: number;
+  /** Kills the command, and its group, before it finishes. */
+  signal?: AbortSignal;
 }
 
 export const DEFAULT_TIMEOUT_MS = 10_000;
@@ -73,21 +75,35 @@ export function runDetached(file: string, args: readonly string[], options: RunO
       windowsHide: true,
     });
 
+    // SIGTERM can be ignored, and then close never arrives and this promise
+    // never settles, holding one of the git permits for the rest of the run.
+    const terminate = (): void => {
+      killGroup(child.pid, 'SIGTERM');
+      killTimer ??= setTimeout(() => killGroup(child.pid, 'SIGKILL'), KILL_GRACE_MS);
+    };
+
+    const onAbort = (): void => terminate();
+
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
       if (timer !== undefined) clearTimeout(timer);
       if (killTimer !== undefined) clearTimeout(killTimer);
+      options.signal?.removeEventListener('abort', onAbort);
       resolve({ stdout, stderr, code, timedOut });
     };
 
     timer = setTimeout(() => {
       timedOut = true;
-      killGroup(child.pid, 'SIGTERM');
-      // SIGTERM can be ignored, and then close never arrives and this promise
-      // never settles, holding one of the git permits for the rest of the run.
-      killTimer = setTimeout(() => killGroup(child.pid, 'SIGKILL'), KILL_GRACE_MS);
+      terminate();
     }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+
+    // Quitting the dashboard must not wait out a stalled network fetch: the
+    // child and its pipes keep the process alive long after the UI is gone.
+    if (options.signal !== undefined) {
+      if (options.signal.aborted) terminate();
+      else options.signal.addEventListener('abort', onAbort, { once: true });
+    }
 
     child.stdout?.on('data', (chunk: Buffer) => {
       if (stdout.length < limit) stdout += chunk.toString();

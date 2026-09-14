@@ -236,11 +236,16 @@ async function cmdDashboard(refresh: boolean): Promise<number> {
   const openInEditor = (path: string, suspend: Suspend): Promise<void> =>
     launchEditor(cfg.editor, path, suspend);
 
+  // A fetch outlives the UI otherwise: its detached child and pipes keep node
+  // alive, so quitting during a stalled fetch leaves the shell without a
+  // prompt until the 60 second timeout.
+  const fetching = new AbortController();
   const fetchAll = (paths: string[], onProgress: (done: number, total: number) => void) =>
-    fetchRepos(paths, cfg.concurrency, onProgress);
+    fetchRepos(paths, cfg.concurrency, onProgress, fetching.signal);
 
   const instance = render(createElement(App, { load, openInEditor, devAction, readLog, fetchRepos: fetchAll }));
   await instance.waitUntilExit();
+  fetching.abort();
   return 0;
 }
 

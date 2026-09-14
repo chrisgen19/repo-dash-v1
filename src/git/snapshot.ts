@@ -164,11 +164,18 @@ async function buildGroup(
     toView(wt, await find(wt.path), timeoutMs),
   );
 
+  const status = mainProbe ? mainProbe.status : main ? await readStatus(mainPath, timeoutMs) : source.status;
+  // Which remote was fetched decides whether a fetch counts, and a linked
+  // worktree may be the only thing tracking one. See readFetchedAt.
+  const upstream = status?.upstream
+    ?? views.find((v) => (v.status?.upstream ?? null) !== null)?.status?.upstream
+    ?? null;
+
   return {
     name: basename(mainPath),
     path: mainPath,
     commonDir,
-    fetchedAt: await readFetchedAt(commonDir),
+    fetchedAt: await readFetchedAt(commonDir, upstream),
     // The anchor may be a linked worktree, so its kind must not stand in for
     // the main checkout's. Read the reported main path instead.
     kind: main?.bare === true && mainProbe === undefined
@@ -176,7 +183,7 @@ async function buildGroup(
       : mainProbe?.repo.kind ?? (await classifyRepoPath(reportedMain)),
     rootLabel: source.repo.rootLabel,
     discovered: mainProbe !== undefined,
-    status: mainProbe ? mainProbe.status : main ? await readStatus(mainPath, timeoutMs) : source.status,
+    status,
     lastCommit: mainProbe ? mainProbe.lastCommit : main ? await readLastCommit(mainPath, timeoutMs) : source.lastCommit,
     worktrees: views,
   };

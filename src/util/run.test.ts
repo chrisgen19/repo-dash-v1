@@ -26,6 +26,20 @@ test('a child that ignores SIGTERM is still killed, so the call always settles',
   assert.ok(Date.now() - started < 10_000, `settled after ${Date.now() - started}ms`);
 });
 
+test('aborting kills the command instead of waiting out its timeout', async () => {
+  // Regression: quitting the dashboard left a stalled fetch holding its child
+  // and pipes, so node could not exit and the shell got no prompt back.
+  const controller = new AbortController();
+  const started = Date.now();
+  setTimeout(() => controller.abort(), 200);
+  const result = await runDetached('sh', ['-c', 'sleep 60'], {
+    timeoutMs: 60_000,
+    signal: controller.signal,
+  });
+  assert.ok(Date.now() - started < 10_000, `settled after ${Date.now() - started}ms`);
+  assert.equal(result.timedOut, false, 'an abort is not a timeout');
+});
+
 test('a timeout kills the whole process group', async () => {
   // The background sleep holds stdout open, so the result only arrives once
   // it is dead too: a timeout that killed just the shell would take 30 seconds.

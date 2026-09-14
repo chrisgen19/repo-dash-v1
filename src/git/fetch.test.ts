@@ -105,6 +105,21 @@ test('a configured core.askPass cannot run during a remote command', async () =>
   assert.equal(seen.stdout.trim(), '', 'remote commands run with it cleared');
 });
 
+test('a fetch that failed for the tracked remote is not recorded', async () => {
+  // Regression: with several remotes, `fetch --all` can fail for the tracked
+  // one and still write entries from another, leaving FETCH_HEAD non-empty and
+  // freshly stamped. The tracked upstream was stale but read as just fetched.
+  const { app } = await remoteAndClone();
+  const commonDir = join(app, '.git');
+  const working = (await runGit(app, ['remote', 'get-url', 'origin'])).stdout.trim();
+  await runGit(app, ['remote', 'add', 'other', working]);
+  await runGit(app, ['remote', 'set-url', 'origin', join(app, 'gone.git')]);
+
+  assert.notEqual((await fetchRepo(app)).error, null, 'origin could not be fetched');
+  assert.notEqual(await readFetchedAt(commonDir, 'other/main'), null, 'the remote that worked counts');
+  assert.equal(await readFetchedAt(commonDir, 'origin/main'), null, 'the one that failed does not');
+});
+
 test('a failed fetch is not recorded as a fetch', async () => {
   // Regression: git truncates FETCH_HEAD to nothing before it exits non-zero,
   // so its mtime alone reported an unreachable remote as fetched "just now",
