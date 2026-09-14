@@ -235,6 +235,15 @@ test('fetch with nothing configured says so', async () => {
   assert.match(stdout, /No repositories found/);
 });
 
+test('fetch --refresh is a flag, not a repository name', async () => {
+  // Regression: the optional target took the first argument whatever it was,
+  // so the documented trailing flag failed as "no repository named".
+  const home = await emptyConfigHome();
+  const { stdout, stderr, code } = await run(['fetch', '--refresh'], home);
+  assert.equal(code, 0, stderr);
+  assert.match(stdout, /No repositories found/);
+});
+
 test('fetch of an unknown repository is an error', async () => {
   const home = await emptyConfigHome();
   const { stderr, code } = await run(['fetch', 'nosuch'], home);

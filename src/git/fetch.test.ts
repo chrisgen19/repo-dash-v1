@@ -7,6 +7,13 @@ import { remoteEnv, runGit } from './exec.js';
 import { fetchRepo, fetchRepos, readFetchedAt } from './fetch.js';
 import { readStatus } from './status.js';
 
+// Set before the first git call, which is when the child environment is
+// snapshotted, so the askpass test below has something real to strip. Each
+// test file runs in its own process, so this affects nothing else.
+process.env['DISPLAY'] = ':0';
+process.env['SSH_ASKPASS'] = '/usr/bin/ssh-askpass';
+process.env['GIT_ASKPASS'] = '/usr/bin/ssh-askpass';
+
 const ID = ['-c', 'user.email=t@t', '-c', 'user.name=t'];
 
 /** A bare remote, a clone of it under test, and a second clone that pushes. */
@@ -70,4 +77,29 @@ test('remote commands cannot prompt for credentials', async () => {
   const env = await remoteEnv();
   assert.equal(env['GIT_TERMINAL_PROMPT'], '0');
   assert.equal(env['GIT_OPTIONAL_LOCKS'], '0', 'the usual isolation still applies');
+});
+
+test('remote commands cannot reach an askpass program either', async () => {
+  // Regression: GIT_TERMINAL_PROMPT only covers git's own terminal prompt.
+  // Without a tty, ssh runs SSH_ASKPASS instead, which on a desktop session
+  // opens a dialog and blocks the fetch rather than failing it.
+  const env = await remoteEnv();
+  assert.equal(env['SSH_ASKPASS_REQUIRE'], 'never');
+  assert.equal(env['SSH_ASKPASS'], undefined);
+  assert.equal(env['GIT_ASKPASS'], undefined);
+  assert.equal(env['DISPLAY'], undefined);
+});
+
+test('a failed fetch is not recorded as a fetch', async () => {
+  // Regression: git truncates FETCH_HEAD to nothing before it exits non-zero,
+  // so its mtime alone reported an unreachable remote as fetched "just now",
+  // which is the opposite of what the column is for.
+  const { app } = await remoteAndClone();
+  const commonDir = join(app, '.git');
+  assert.equal((await fetchRepo(app)).error, null);
+  assert.ok(await readFetchedAt(commonDir) !== null, 'the successful fetch counted');
+
+  await runGit(app, ['remote', 'set-url', 'origin', join(app, 'no-such-remote.git')]);
+  assert.notEqual((await fetchRepo(app)).error, null, 'the second fetch fails');
+  assert.equal(await readFetchedAt(commonDir), null, 'the failure is not a fetch');
 });

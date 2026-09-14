@@ -124,7 +124,7 @@ app              main       ↑2 ↓5         3      1   2 hours ago
 | Column | Meaning |
 |---|---|
 | `AHEAD/BEHIND` | `↑n` unpushed, `↓n` unpulled, `·` level, `-` no upstream, `?` unreadable |
-| `FETCHED` | Time since the last fetch: `just now`, `3h ago`, `2d ago` (yellow from a day old), `never` if not fetched since cloning, `-` without an upstream |
+| `FETCHED` | Time since the last successful fetch: `just now`, `3h ago`, `2d ago` (yellow from a day old), `never` if none has succeeded since cloning, `-` without an upstream |
 | `DIRTY` | Changed entries including untracked; a trailing `!` means merge conflicts |
 | `WT` | Linked worktrees, listed beneath the repo under `--expand` |
 
@@ -134,10 +134,15 @@ until you ask: `f` fetches the selected repository in the dashboard, `F` or
 `repo-dash fetch` fetches every one, and the `FETCHED` column shows how long
 ago each last did.
 
-Fetches never prompt. They run with no terminal attached and with
-`GIT_TERMINAL_PROMPT=0`, so a remote that wants a password or an SSH
-passphrase fails with git's message instead of taking over the dashboard.
-Credential helpers, such as `gh auth git-credential`, still work.
+Fetches never prompt. They run with no terminal attached, with
+`GIT_TERMINAL_PROMPT=0`, and with the askpass programs disabled, so a remote
+that wants a password or an SSH passphrase fails with git's message instead of
+taking over the dashboard or opening a dialog. Credential helpers, such as
+`gh auth git-credential`, still work.
+
+A fetch that fails never counts as one. Git clears its own record of the
+attempt, so `FETCHED` falls back to `never` rather than claiming a fetch that
+did not happen, and `↓n` is not presented as fresher than it is.
 
 A repository whose main worktree lies outside every configured root
 but which owns a worktree inside one is shown as `name (external)`.

@@ -95,9 +95,24 @@ export async function runGit(
  * repository isolation, plus GIT_TERMINAL_PROMPT=0 so an https remote that
  * wants credentials fails instead of waiting for input that cannot arrive.
  * Credential helpers, such as `gh auth git-credential`, still run.
+ *
+ * Taking the terminal away is not enough on its own. With DISPLAY and
+ * SSH_ASKPASS set, ssh asks an askpass program instead of the tty, and on a
+ * desktop session that opens a dialog and holds the fetch until it times out;
+ * git does the same through GIT_ASKPASS. Both are disabled here.
+ *
+ * These are environment variables rather than `GIT_SSH_COMMAND -o
+ * BatchMode=yes`, which would outrank the user's own core.sshCommand and
+ * quietly discard their ssh configuration.
  */
 export async function remoteEnv(): Promise<NodeJS.ProcessEnv> {
-  return { ...(await childEnv()), GIT_TERMINAL_PROMPT: '0' };
+  const env: NodeJS.ProcessEnv = { ...(await childEnv()), GIT_TERMINAL_PROMPT: '0' };
+  env['SSH_ASKPASS_REQUIRE'] = 'never'; // OpenSSH 8.4 and newer
+  // Older ssh has no REQUIRE, and reads an askpass whenever there is no tty.
+  delete env['SSH_ASKPASS'];
+  delete env['GIT_ASKPASS'];
+  delete env['DISPLAY'];
+  return env;
 }
 
 /**

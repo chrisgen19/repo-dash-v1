@@ -50,6 +50,10 @@ export async function fetchRepos(
  * fetch run from a linked worktree writes it under `worktrees/<name>/` and
  * leaves the main one alone, so the newest of them counts. A fresh clone
  * writes none, which is why a just-cloned repository reads as never fetched.
+ *
+ * A fetch that fails rewrites it too, truncating it to nothing before git
+ * exits, so the mtime alone would report a failed attempt as a fetch that
+ * just happened. An empty file is therefore skipped.
  */
 export async function readFetchedAt(commonDir: string): Promise<number | null> {
   const candidates = [join(commonDir, 'FETCH_HEAD')];
@@ -64,7 +68,11 @@ export async function readFetchedAt(commonDir: string): Promise<number | null> {
   let newest: number | null = null;
   for (const file of candidates) {
     try {
-      const seconds = Math.floor((await stat(file)).mtimeMs / 1000);
+      const info = await stat(file);
+      // Empty means a failed attempt, not a fetch. Git truncates the file
+      // before it contacts the remote and only then writes the refs it got.
+      if (info.size === 0) continue;
+      const seconds = Math.floor(info.mtimeMs / 1000);
       if (newest === null || seconds > newest) newest = seconds;
     } catch {
       // Never fetched from there.

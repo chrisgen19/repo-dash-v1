@@ -341,7 +341,9 @@ async function findRepoPath(
  */
 async function cmdFetch(rest: string[], refresh: boolean): Promise<number> {
   const cfg = await loadConfig();
-  const [target] = rest;
+  // Global flags may follow the command, as in `list --refresh`, so the first
+  // argument is not necessarily the repository name.
+  const target = rest.find((arg) => !arg.startsWith('-'));
 
   let paths: string[];
   if (target === undefined) {
